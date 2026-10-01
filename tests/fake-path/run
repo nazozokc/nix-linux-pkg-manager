@@ -1,0 +1,452 @@
+#!/usr/bin/env bash
+# tests/fake-path/run — 5 pm すべてのコマンド生成と差分計算を検証する
+#
+# ホストが Arch でも apt / dnf / zypper / yum の経路を検証できる唯一の手段。
+# PATH を差し替えてスタブだけを解決させ、生成したコマンドと引数、
+# および不足パッケージの判定結果を突き合わせる。
+#
+# nlp は coreutils / gnugrep / gnused を PATH の先頭に足した状態で動く。
+# 引数、pm 名 (pacman / apt-get / apt-mark / dnf / rpm / zypper / yum / sudo)
+# は closure に入っていないので、末尾に足したスタブディレクトリが優先される。
+#
+# 使い方:
+#   NLP=/path/to/nlp tests/fake-path/run
+set -uo pipefail
+
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+stub="$here/stub"
+nlp="${NLP:-}"
+
+fail=0
+total=0
+
+ok() {
+  total=$((total + 1))
+  printf '  \033[32mok\033[0m   %s\n' "$1"
+}
+
+ng() {
+  total=$((total + 1))
+  fail=$((fail + 1))
+  printf '  \033[31mFAIL\033[0m %s\n' "$1"
+  shift
+  while [ $# -gt 0 ]; do
+    printf '       %s\n' "$1"
+    shift
+  done
+}
+
+section() {
+  printf '\n\033[1m%s\033[0m\n' "$1"
+}
+
+# その pm が実際に使うスタブだけ PATH の先頭へ足す。
+# (全部入れると detect が apt を先に検出してしまい、pm ごとの検証にならない)
+make_path() {
+  local dir="$1" pm="$2" b
+  mkdir -p "$dir"
+  case "$pm" in
+    pacman) local set="pacman sudo" ;;
+    apt) local set="apt-get apt-mark sudo" ;;
+    dnf | zypper | yum) local set="$pm rpm sudo" ;;
+    *) local set="$pm" ;;
+  esac
+  for b in $set; do
+    ln -sf "$stub" "$dir/$b"
+  done
+  printf '%s' "$dir"
+}
+
+# run <stub-dir> <subcommand> [env=値 ...]
+#   呼び出し記録 → $calls / 出力 → $out / 終了コード → $rc
+run() {
+  local dir="$1" sub="$2"
+  shift 2
+  local log
+  log="$(mktemp)"
+  out="$(env PATH="$dir" STUB_LOG="$log" "$@" "$nlp" "$sub" 2>&1)"
+  rc=$?
+  calls="$(cat "$log" 2>/dev/null)"
+  rm -f "$log"
+}
+
+if [ -z "$nlp" ] || [ ! -x "$nlp" ]; then
+  printf '  \033[31mFAIL\033[0m nlp が無い: %s\n' "${nlp:-<未設定>}"
+  printf '       NLP=/nix/store/...-nlp/bin/nlp を渡すこと\n'
+  exit 1
+fi
+
+d="$(mktemp -d)"
+
+# ===========================================================================
+section 'pacman — 不足判定'
+#   declare は man-db bash-completion。
+#   pacman -T は不足名のみを stdout に出し rc=127 で終わる
+# ===========================================================================
+p="$(make_path "$d/pacman" pacman)"
+run "$p" diff STUB_STDOUT='man-db' STUB_RC=127 STUB_STDERR='ignored'
+
+if printf '%s' "$calls" | grep -Fqx 'pacman -T bash-completion man-db'; then
+  ok 'pacman -T に宣言パッケージを渡す'
+else
+  ng 'pacman -T の引数' "期待: pacman -T bash-completion man-db" "実際: $calls"
+fi
+
+if printf '%s' "$out" | grep -qE 'missing +1'; then
+  ok '不足 1 件として判定'
+else
+  ng '不足件数' "期待: missing 1 / 実際: $out"
+fi
+
+if printf '%s' "$out" | grep -qE '^ +- man-db$'; then
+  ok '不足パッケージ名 (man-db) を表示'
+else
+  ng '不足パッケージ名' "実際: $out"
+fi
+
+if printf '%s' "$out" | grep -qE '^ +- bash-completion$'; then
+  ng '充足済みを含めない' "bash-completion が不足扱い: $out"
+else
+  ok '充足済み (bash-completion) は不足に入らない'
+fi
+
+if [ "$rc" -eq 0 ]; then
+  ok 'pacman -T が rc=127 を返しても異常終了しない'
+else
+  ng 'rc=127 の扱い' "期待: 0 / 実際: $rc" "$out"
+fi
+
+run "$p" diff STUB_STDOUT='' STUB_RC=0
+if printf '%s' "$out" | grep -qE 'missing +0'; then
+  ok '全て導入済みなら不足 0'
+else
+  ng '不足 0 件' "実際: $out"
+fi
+
+# ===========================================================================
+section 'pacman — apply / update'
+# ===========================================================================
+run "$p" apply STUB_STDOUT='man-db' STUB_RC=127
+
+if printf '%s' "$calls" | grep -Fqx 'sudo -v'; then
+  ok '先に sudo -v を実行'
+else
+  ng 'sudo -v' "実際: $calls"
+fi
+
+if printf '%s' "$calls" | grep -Fqx 'sudo pacman -S --needed --noconfirm man-db'; then
+  ok '不足分だけを pacman -S に渡す'
+else
+  ng 'install コマンド' "期待: sudo pacman -S --needed --noconfirm man-db" "実際: $calls"
+fi
+
+if printf '%s' "$out" | grep -qF 'sudo pacman -S --needed --noconfirm man-db'; then
+  ok '実行前にコマンドを提示'
+else
+  ng 'コマンド提示' "実際: $out"
+fi
+
+# 不足判定のための pacman -T は必ず走る (それ自体は副作用がない)。
+# 走ってよいのは照会だけ。pacman -S / sudo が出ていたら副作用がある
+run "$p" apply STUB_STDOUT='' STUB_RC=0
+if [ -z "$calls" ]; then
+  ok '不足 0 なら install / sudo を呼ばない'
+else
+  if printf '%s' "$calls" | grep -qvFqx 'pacman -T bash-completion man-db'; then
+    ng '不足 0 のとき副作用なし' "照会以外が呼ばれた: $calls"
+  else
+    ok '不足 0 なら install / sudo を呼ばない (照会のみ)'
+  fi
+fi
+
+run "$p" update STUB_STDOUT='man-db' STUB_RC=127
+if printf '%s' "$calls" | grep -Fqx 'sudo pacman -Syu --noconfirm'; then
+  ok 'pacman -Syu を実行'
+else
+  ng 'update コマンド' "実際: $calls"
+fi
+if printf '%s' "$calls" | grep -Fq 'sudo pacman -S --needed --noconfirm'; then
+  ok 'update 後に不足分を補う'
+else
+  ng 'update 後の install' "実際: $calls"
+fi
+if [ "$(printf '%s' "$calls" | grep -cF 'sudo -v')" -eq 2 ]; then
+  ok 'sudo -v は update と install で 1 回ずつ (計2)'
+else
+  ng 'sudo -v の回数' "期待: 2 / 実際: $calls"
+fi
+
+# ===========================================================================
+section 'apt — 不足判定は apt-get --simulate の Inst 行から'
+#   declare は man-db bash-completion bat
+# ===========================================================================
+p="$(make_path "$d/apt" apt)"
+run "$p" diff STUB_STDOUT='NOTE: This is only a simulation!
+Inst bash-completion (1:2.3-1)
+Inst bat (0.25.0-2)
+Conf man-db (2.11.1-2)'
+
+# 宣言は sort -u を通るので、pm コマンドに渡るパッケージ名は常にソート済み。
+# (packages/apt.nix の宣言順そのままではない点に注意)
+if printf '%s' "$calls" | grep -Fqx 'apt-get install --simulate --no-install-recommends -o Debug::NoLocking=1 bash-completion bat man-db'; then
+  ok 'apt-get install --simulate に宣言を渡す (ソート済み)'
+else
+  ng 'simulate の引数' "実際: $calls"
+fi
+
+if printf '%s' "$calls" | grep -Fqx 'apt-mark showmanual'; then
+  ok '明示導入は apt-mark showmanual'
+else
+  ng 'explicit コマンド' "実際: $calls"
+fi
+
+if printf '%s' "$out" | grep -qE 'missing +2'; then
+  ok 'Inst 行 2 件だけを不足として数える (NOTE / Conf は除外)'
+else
+  ng '不足件数' "期待: 2 / 実際: $out"
+fi
+
+if printf '%s' "$out" | grep -qE '^ +- bash-completion$' && printf '%s' "$out" | grep -qE '^ +- bat$'; then
+  ok '不足名をそのまま表示'
+else
+  ng '不足名' "実際: $out"
+fi
+
+if printf '%s' "$out" | grep -qE '^ +- man-db$'; then
+  ng '導入済みを不足にしない' "man-db が不足扱い: $out"
+else
+  ok 'Inst 行の無い man-db は不足に入らない'
+fi
+
+run "$p" apply STUB_STDOUT='Inst man-db (2.11.1-2)
+Inst bash-completion (1:2.3-1)'
+if printf '%s' "$calls" | grep -Fqx 'sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends bash-completion man-db'; then
+  ok '不足だけを apt-get install に渡す'
+else
+  ng 'install コマンド' "実際: $calls"
+fi
+
+# 2 本のコマンドはどちらも sudo が付く。
+# `&&` で 1 本に繋いで sudo を前置すると 2 本目以降が root にならない
+run "$p" update STUB_STDOUT=''
+if printf '%s' "$calls" | grep -Fqx 'sudo apt-get update' &&
+  printf '%s' "$calls" | grep -Fqx 'sudo apt-get -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold full-upgrade'; then
+  ok 'apt-get update と full-upgrade をどちらも sudo で実行'
+else
+  ng 'update コマンド' "実際: $calls"
+fi
+
+# ===========================================================================
+section '宣言の誤り — 存在しないパッケージ名を検出する'
+# ===========================================================================
+# apt は存在しない名前を含むと E: で異常終了し、Inst 行を1行も出さない。
+# そのままにすると「不足なし」に見える (偽陰性) ので、nlp は終了コード 2 で落とす
+
+p="$(make_path "$d/apt-err" apt)"
+run "$p" diff STUB_STDERR='E: Unable to locate package opencode'
+
+if [ "$rc" -eq 2 ]; then
+  ok '照合コマンドが E: を返したら終了コード 2'
+else
+  ng '照合エラーの終了コード' "期待: 2 / 実際: $rc" "$out"
+fi
+
+if printf '%s' "$out" | grep -q '照合コマンドがエラー'; then
+  ok '照合エラーの理由を報告する'
+else
+  ng '照合エラーの報告' "実際: $out"
+fi
+
+if printf '%s' "$out" | grep -q 'Unable to locate package opencode'; then
+  ok 'apt の stderr をそのまま見せる'
+else
+  ng 'stderr の提示' "実際: $out"
+fi
+
+# apply も同じく落とす (黙って入るのを防ぐ)
+run "$p" apply STUB_STDERR='E: Unable to locate package opencode'
+if [ "$rc" -eq 2 ]; then
+  ok 'apply も照合エラーで停止する'
+else
+  ng 'apply の照合エラー' "期待: 2 / 実際: $rc" "$out"
+fi
+
+if printf '%s' "$calls" | grep -qF 'sudo apt-get install'; then
+  ng '照合エラー時は install を実行しない' "install が実行された: $calls"
+else
+  ok '照合エラー時は install を実行しない'
+fi
+
+# apt は不足が無くても stderr に NOTE を出Dividnothing なので、
+# エラー行が無い stderr では止めない
+run "$p" diff STUB_STDERR='NOTE: This is only a simulation!' STUB_STDOUT='Inst bat (0.25.0-2)'
+if [ "$rc" -eq 0 ]; then
+  ok 'NOTE だけの stderr では正常動作する'
+else
+  ng 'NOTE だけの stderr' "期待: 0 / 実際: $rc" "$out"
+fi
+
+# ===========================================================================
+section 'dnf — 不足判定は rpm -q の充足名から反転'
+#   declare は man-pages bash-completion
+# ===========================================================================
+p="$(make_path "$d/dnf" dnf)"
+run "$p" diff STUB_STDOUT='bash-completion' STUB_STDERR='package man-pages is not installed'
+
+if printf '%s' "$calls" | grep -Fqx "rpm -q --qf '%{NAME}\\n' bash-completion man-pages"; then
+  ok 'rpm -q に宣言を渡す (ソート済み)'
+else
+  ng 'rpm -q の引数' "実際: $calls"
+fi
+
+if printf '%s' "$calls" | grep -Fqx "rpm -qa --userinstalled --qf '%{NAME}\\n'"; then
+  ok '明示導入は userinstalled'
+else
+  ng 'explicit コマンド' "実際: $calls"
+fi
+
+if printf '%s' "$out" | grep -qE 'missing +1' && printf '%s' "$out" | grep -qE '^ +- man-pages$'; then
+  ok '充足名を引いて不足名を求める'
+else
+  ng '不足判定' "期待: man-pages / 実際: $out"
+fi
+
+run "$p" diff STUB_STDOUT='' STUB_STDERR='package bash-completion is not installed'
+if printf '%s' "$out" | grep -qE 'missing +2'; then
+  ok 'rpm の出力が空なら宣言全体が不足'
+else
+  ng '全不足判定' "期待: 2 / 実際: $out"
+fi
+
+run "$p" apply STUB_STDOUT='bash-completion' STUB_STDERR='package man-pages is not installed'
+if printf '%s' "$calls" | grep -Fqx 'sudo dnf install -y man-pages'; then
+  ok '不足だけを dnf install に渡す'
+else
+  ng 'install コマンド' "実際: $calls"
+fi
+
+run "$p" update STUB_STDOUT=''
+if printf '%s' "$calls" | grep -Fqx 'sudo dnf upgrade -y'; then
+  ok 'dnf upgrade -y を実行'
+else
+  ng 'update コマンド' "実際: $calls"
+fi
+
+# ===========================================================================
+section 'zypper — declare は man bash-completion'
+# ===========================================================================
+p="$(make_path "$d/zypper" zypper)"
+
+run "$p" diff STUB_STDOUT='man' STUB_STDERR='package bash-completion is not installed'
+if printf '%s' "$out" | grep -qE 'missing +1' && printf '%s' "$out" | grep -qE '^ +- bash-completion$'; then
+  ok 'zypper の不足判定'
+else
+  ng 'zypper 不足判定' "期待: bash-completion / 実際: $out"
+fi
+
+run "$p" apply STUB_STDOUT='man' STUB_STDERR='package bash-completion is not installed'
+if printf '%s' "$calls" | grep -Fqx 'sudo zypper --non-interactive install -y bash-completion'; then
+  ok 'zypper install に不足だけを渡す'
+else
+  ng 'zypper install' "実際: $calls"
+fi
+
+run "$p" update STUB_STDOUT=''
+if printf '%s' "$calls" | grep -Fqx 'sudo zypper --non-interactive update'; then
+  ok 'zypper update を実行'
+else
+  ng 'zypper update' "実際: $calls"
+fi
+
+# ===========================================================================
+section 'yum — 明示導入に userinstalled を使わない (RHEL 7 には無い)'
+# ===========================================================================
+p="$(make_path "$d/yum" yum)"
+
+run "$p" diff STUB_STDOUT='' STUB_STDERR='package bash-completion is not installed'
+if printf '%s' "$calls" | grep -Fqx "rpm -qa --qf '%{NAME}\\n'"; then
+  ok 'rpm -qa (userinstalled なし) を使う'
+else
+  ng 'yum explicit' "実際: $calls"
+fi
+if printf '%s' "$calls" | grep -q 'userinstalled'; then
+  ng 'userinstalled を参照しない' "実際: $calls"
+else
+  ok 'userinstalled を参照しない'
+fi
+
+run "$p" apply STUB_STDOUT='' STUB_STDERR='package bash-completion is not installed'
+if printf '%s' "$calls" | grep -Fqx 'sudo yum install -y bash-completion man'; then
+  ok 'yum install に不足を渡す'
+else
+  ng 'yum install' "実際: $calls"
+fi
+
+run "$p" update STUB_STDOUT=''
+if printf '%s' "$calls" | grep -Fqx 'sudo yum update -y'; then
+  ok 'yum update -y を実行'
+else
+  ng 'yum update' "実際: $calls"
+fi
+
+# ===========================================================================
+section '全 pm — remove / autoremove を実行しない'
+# ===========================================================================
+for pm in pacman apt dnf zypper yum; do
+  p="$(make_path "$d/noremove-$pm" "$pm")"
+  run "$p" update STUB_STDOUT='' STUB_RC=0
+  if printf '%s' "$calls" | grep -Eqi '(remove|purge|autoremove|orphans)'; then
+    ng "$pm は削除系コマンドを呼ばない" "実際: $calls"
+  else
+    ok "$pm は削除系コマンドを呼ばない"
+  fi
+done
+
+# ===========================================================================
+section 'ホスト判定'
+# ===========================================================================
+empty="$(mktemp -d)"
+run "$empty" diff
+if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q 'パッケージマネージャーがありません'; then
+  ok 'pm 未検出で終了コード 1'
+else
+  ng 'pm 未検出' "期待: rc=1 / 実際: rc=$rc" "$out"
+fi
+
+p="$(make_path "$d/bogus" pacman)"
+run "$p" bogus
+if [ "$rc" -eq 2 ] && printf '%s' "$out" | grep -q 'unknown command'; then
+  ok '不明なコマンドは終了コード 2'
+else
+  ng '不明なコマンド' "期待: rc=2 / 実際: rc=$rc" "$out"
+fi
+
+p="$(make_path "$d/status" pacman)"
+run "$p" status
+# status は宣言件数と検出結果だけを見るので、pm に照会しない。
+# ここで pacman -T / -Qqe を呼ぶと「副作用なし」の意味が壊れる
+if [ -z "$calls" ]; then
+  ok 'status は pm コマンドを呼ばない'
+else
+  ng 'status は pm を呼ばない' "実際: $calls"
+fi
+if printf '%s' "$out" | grep -qE 'pacman +pacman@/'; then
+  ok 'status に実行ファイルのパスが出る'
+else
+  ng 'status の表示' "実際: $out"
+fi
+if printf '%s' "$out" | grep -qE 'apt +\(not found\)'; then
+  ok 'status は未導入の pm も一覧する'
+else
+  ng 'status の未検出 pm' "実際: $out"
+fi
+
+rm -rf "$d"
+
+printf '\n'
+if [ "$fail" -eq 0 ]; then
+  printf '  \033[32mall %d passed\033[0m\n' "$total"
+  exit 0
+fi
+printf '  \033[31m%d / %d failed\033[0m\n' "$fail" "$total"
+exit 1
