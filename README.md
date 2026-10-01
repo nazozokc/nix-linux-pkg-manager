@@ -1,4 +1,4 @@
-# nix-linux-packages
+# nix-linux-pkg-manager
 
 Nix を宣言の入口として、**ネイティブの**パッケージマネージャー経由で
 Linux パッケージを導入する。パッケージ自体を Nix store には置かない。
@@ -119,22 +119,22 @@ pm ごとに 1 ファイルなので、対象をまたぐ宣言は素直に書�
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
-    nix-linux-packages = {
-      url = "github:nazozokc/nix-linux-packages";
+    nix-linux-pkg-manager = {
+      url = "github:nazozokc/nix-linux-pkg-manager";
       # 消費側の nixpkgs を使い回す (nixpkgs を二重に引かなくなる)
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
 
   outputs =
-    { nixpkgs, nix-linux-packages, ... }:
+    { nixpkgs, nix-linux-pkg-manager, ... }:
     let
       systems = [ "x86_64-linux" ];
     in {
       packages = nixpkgs.lib.genAttrs systems (
         system:
         {
-          default = nix-linux-packages.lib.mkNlp {
+          default = nix-linux-pkg-manager.lib.mkNlp {
             pkgs = nixpkgs.legacyPackages.${system};
             declared = {
               pacman = [

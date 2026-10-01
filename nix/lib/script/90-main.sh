@@ -9,7 +9,7 @@
 
 usage() {
   cat <<'USAGE'
-nix-linux-packages — 宣言的に Linux のパッケージマネージャーを扱う
+nix-linux-pkg-manager — 宣言的に Linux のパッケージマネージャーを扱う
 
 usage: nix run .#<command>
 
