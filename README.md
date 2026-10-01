@@ -154,18 +154,24 @@ pm ごとに 1 ファイルなので、対象をまたぐ宣言は素直に書�
 }
 ```
 
-評価しただけでは何も入らない。入れる瞬間はユーザーが選ぶ。
+このツールが出すのは実行体だけ。いつ動かすかは消費側の config が決める。
+評価しただけではホストの pm は動かない。
+
+```nix
+# たとえば自分の flake で switch という名前に載せる。名前はユーザー側の都合。
+apps.switch = config.apps.nlp-apply;
+```
 
 ```console
-$ nix run .#switch       # この瞬間だけ、不足分をホストへ反映する
 $ nix run .#nlp-diff     # 宣言と導入済みを比較 (副作用なし)
+$ nix run .#nlp-apply    # 不足分だけ導入する
 $ nix run .#nlp-update   # pm を更新してから不足分を補う
 $ nix run .#nlp-status   # 検出した pm と宣言の件数
 ```
 
-`switch` は `apply` と同じで、宣言にあって未導入のものだけを入れる。
-削除はしない。`nlp-` は `diff` などが消費側の既存 app を潰さないための接頭辞で、
-`switch` には付かない。外すなら `nlp.appPrefix = ""`。
+`nlp-` は消費側がもともと持っている `apps.diff` を潰さないための接頭辞。
+空にしたいときは `nlp.appPrefix = ""`。`nix run .` を diff にしたいときは
+`nlp.defaultApp = "diff"`。
 
 `declared` は部分指定でよい。書いた pm だけを使い、書かなかった pm は
 空リスト（`diff` は「宣言なし」と表示）になる。

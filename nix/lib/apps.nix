@@ -19,7 +19,6 @@
 let
   commands = {
     diff = "宣言と導入済みを比較する (副作用なし)";
-    switch = "宣言を今ホストへ反映する (実行した瞬間だけ動く)";
     apply = "不足しているパッケージを導入する";
     update = "パッケージマネージャーを更新してから不足分を補う";
     status = "検出したパッケージマネージャーと宣言の件数";
@@ -44,23 +43,13 @@ let
 
   named = lib.mapAttrs mkApp commands;
 
-  # switch だけは接頭辞を付けない。アクションの瞬間は `nix run .#switch`。
-  # diff などは接頭辞付きのままにして、消費側の既存 app を潰さない。
-  apps =
-    lib.mapAttrs' (
-      name: app:
-      lib.nameValuePair (if name == "switch" then name else "${appPrefix}${name}") app
-    ) named;
+  apps = lib.mapAttrs' (name: app: lib.nameValuePair "${appPrefix}${name}" app) named;
 in
 {
   package = nlp;
   apps =
     apps
     // lib.optionalAttrs (defaultApp != null) {
-      default =
-        let
-          name = if defaultApp == "switch" then defaultApp else "${appPrefix}${defaultApp}";
-        in
-        apps.${name};
+      default = apps."${appPrefix}${defaultApp}";
     };
 }

@@ -5,8 +5,8 @@ nix で Linux のパッケージマネージャー (pacman / apt / dnf / zypper 
 
 - このリポジトリの宣言: `packages/<pm>.nix`
 - 消費側の宣言: flake の `nlp.declared`（`flakeModules.default`）
-- 実行: 評価では走らない。消費側は `nix run .#switch` した瞬間だけ反映する
-  （見るだけなら `.#nlp-diff`。このリポジトリ自身は `.#diff` / `.#apply` も残す）
+- 実行体: `diff` / `apply` / `update` / `status`
+- いつ実行するかは消費側の config が決める。このリポジトリは仕組みだけを出す
 
 ## ファイル構成
 
