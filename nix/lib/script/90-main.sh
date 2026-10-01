@@ -14,6 +14,7 @@ nix-linux-pkg-manager — 宣言的に Linux のパッケージマネージャ�
 usage: nix run .#<command>
 
   diff     宣言と導入済みを比較する (default / 副作用なし)
+  switch   宣言を今ホストへ反映する (apply と同じ。実行した瞬間だけ動く)
   apply    不足しているパッケージを導入する
   update   パッケージマネージャーを更新してから不足分を補う
   status   検出したパッケージマネージャーと宣言の件数
@@ -29,7 +30,7 @@ main() {
   fi
 
   case "$cmd" in
-  diff | apply | update | status) ;;
+  diff | apply | update | status | switch) ;;
   -h | --help | help)
     usage
     return 0
@@ -67,7 +68,7 @@ main() {
 
   case "$cmd" in
   diff) do_diff "$pm" ;;
-  apply) do_apply "$pm" ;;
+  apply | switch) do_apply "$pm" ;;
   update) do_update "$pm" ;;
   status) do_status "$pm" ;;
   esac

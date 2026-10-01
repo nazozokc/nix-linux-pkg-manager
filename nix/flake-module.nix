@@ -22,6 +22,7 @@ let
 
   commandNames = [
     "diff"
+    "switch"
     "apply"
     "update"
     "status"
@@ -60,9 +61,9 @@ in
       default = "nlp-";
       example = "nlp-";
       description = ''
-        生成する app 名の接頭辞。
+        switch 以外の app 名の接頭辞。
         既定の `nlp-` は、消費側がもともと持っている `apps.diff` を潰さないため。
-        空文字にすると `diff` / `apply` / `update` / `status` になる。
+        `apps.switch` は接頭辞を付けない。アクションは `nix run .#switch` の瞬間だけ。
       '';
     };
 
