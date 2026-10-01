@@ -9,12 +9,19 @@
   declared,
   lib,
   pkgs,
+
+  # 生成したスクリプトから shellcheck で黙らせるコード。
+  # 宣言の検証 (nix/lib/declared.nix) を意図的に飛ばすテスト用の nlp では
+  # 宣言に「単一引用符の中で $ を含む値」がわざと入っているため、
+  # SC2016 だけを黙らせる (他の指摘は残す)
+  excludeShellChecks ? [ ],
 }:
 let
   render = import ./render.nix;
 in
 pkgs.writeShellApplication {
   name = "nlp";
+  inherit excludeShellChecks;
 
   # 照合に使う外部コマンド。
   # pacman / apt-get / dnf / rpm / zypper / yum / sudo は意図的に
@@ -25,5 +32,7 @@ pkgs.writeShellApplication {
     pkgs.gnused
   ];
 
+  # writeShellApplication がシェバングを足し、shellcheck を通してから
+  # ビルドする。生成したスクリプトの lint はここで 1 回だけかかる
   text = render { inherit backends declared lib; };
 }

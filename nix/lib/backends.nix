@@ -2,7 +2,7 @@
 # 5 つのパッケージマネージャの定義。
 #
 # ここで持つのは「この pm で何をするか」の純粋データだけ。
-# diff エンジン (nix/lib/render.nix) はこのデータ形状に依存しないので、
+# 照合エンジン (nix/lib/script/30-query.sh) はこのデータ形状に依存しないので、
 # 対応 pm を増やすときはここへ 1 エントリ足すだけで済む。
 #
 # フィールド
@@ -15,14 +15,24 @@
 #     cmd          実行ファイル名を @PKGS@ で宣言パッケージ列に置き換えて実行する
 #                  (@PKGS@ は bash の glob 文字を含まない。%s を使うと
 #                   ${var//%s/...} の pattern として「任意文字列」に解釈され崩れる)
-#     output       "missing" = 不足名を出力する / "satisfied" = 充足名を出力する
-#     extract      各行に適用する sed スクリプト。render.nix が `p` を付ける
+#     output       "missing"   = 不足名を出力する
+#                  "satisfied" = 充足名を出力する
+#     extract      各行に適用する sed スクリプト。query.sh が `p` を付ける
+#     okCodes      「有効な答え」を表す終了コード
+#     error        stderr に現れたら異常終了とみなすパターン (1行1個)
 #   install        @PKGS@ をパッケージ列に置換して実行する導入コマンド
 #   update         1行ずつ sudo を付けて実行するコマンドのリスト
 #
+# missingQuery.okCodes と missingQuery.error の関係
+#   「pm が異常終了した」ことの判定は backend ごとに違う。全部の `error:` を
+#   見てはいけない。pacman は不足があるだけで
+#   `error: package 'foo' was not found` のような行を stderr に出すため、
+#   そこまで含めると「不足があるだけで異常終了」になり diff が一生壊れる。
+#   なので「正常な答えに対応する終了コード」と「本当に異常な行」を分けて書く。
+#
 # remove / autoremove は意図的に持たない。
 # apt / dnf / yum / zypper の autoremove は、
-# このツールが把握していない.packagesまで巻き込んで消すため危険。
+# このツールが把握していない .packages まで巻き込んで消すため危険。
 # 宣言から消えたパッケージは unmanaged として報告するだけに留める。
 {
   # ---------------------------------------------------------------------------
@@ -36,10 +46,23 @@
 
     missingQuery = {
       # pacman -T は充足済みなら無出力 + rc=0、不足があれば不足名のみ stdout + rc=127。
-      # 127 は異常終了なので `set -e` / `pipefail` 下では必ず `|| true` 相当で受けること。
+      # 127 は「答えが返ってきた」ので異常ではない
       cmd = pkgs: "pacman -T ${pkgs}";
       output = "missing";
       extract = "s/$//"; # 出力そのものが不足名
+      okCodes = [
+        0
+        127
+      ];
+      # 不足があるだけで `error: package 'foo' was not found` が出る pacman があるため、
+      # `package ... was not found` は正常な答えなので除外する。
+      # 「環境側の異常」だけをここに置く
+      error = [
+        "^error: (could not|failed|invalid|cannot|unexpected|no such|wrong)"
+        "^error: could not open file"
+        "^error: failed to init transaction"
+        "^error: could not lock database"
+      ];
     };
 
     install = pkgs: "pacman -S --needed --noconfirm ${pkgs}";
@@ -61,6 +84,17 @@
       cmd = pkgs: "apt-get install --simulate --no-install-recommends -o Debug::NoLocking=1 ${pkgs}";
       output = "missing";
       extract = "s/^Inst \\([^ ]*\\).*/\\1/";
+      # apt は異常終了すると rc=100。答えが出たら必ず 0
+      okCodes = [ 0 ];
+      # 存在しない名前は `E: Unable to locate package x`。
+      # `NOTE: This is only a simulation!` は異常ではないので入れない
+      error = [
+        "^E: "
+        "^error: "
+        "^Unable to locate package"
+        "^No package matching"
+        "^dpkg: error"
+      ];
     };
 
     # `env` を挟むのは、sudo が先頭の環境変数割り当てを
@@ -86,11 +120,19 @@
     explicit = ''rpm -qa --userinstalled --qf '%{NAME}\n' '';
 
     missingQuery = {
-      # --qf '%{NAME}\n' は導入済みなら名前を、无ければ何も出さない。
+      # --qf '%{NAME}\n' は導入済みなら名前を、無ければ何も出さない。
       # NAME はアーキテクチャ接尾辞を含まないので宣言名とそのまま一致する。
+      # `package X is not installed` は stderr に出るが正常な答えなので exitCode 1 も正常
       cmd = pkgs: ''rpm -q --qf '%{NAME}\n' ${pkgs}'';
       output = "satisfied";
       extract = "s/$//";
+      okCodes = [
+        0
+        1
+      ];
+      # `package X is not installed` は不足の答えなので、
+      # ここから先の行だけを異常とみなす
+      error = [ "^error: " ];
     };
 
     install = pkgs: "dnf install -y ${pkgs}";
@@ -110,6 +152,11 @@
       cmd = pkgs: ''rpm -q --qf '%{NAME}\n' ${pkgs}'';
       output = "satisfied";
       extract = "s/$//";
+      okCodes = [
+        0
+        1
+      ];
+      error = [ "^error: " ];
     };
 
     install = pkgs: "zypper --non-interactive install -y ${pkgs}";
@@ -131,6 +178,11 @@
       cmd = pkgs: ''rpm -q --qf '%{NAME}\n' ${pkgs}'';
       output = "satisfied";
       extract = "s/$//";
+      okCodes = [
+        0
+        1
+      ];
+      error = [ "^error: " ];
     };
 
     install = pkgs: "yum install -y ${pkgs}";

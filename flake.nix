@@ -28,16 +28,30 @@
 
       pms = lib.attrNames backends;
 
+      # 宣言の検査 (nix/lib/declared.nix)。
+      # apps / checks / lib.mkNlp の 3 経路が同じ検査を通す
+      #
+      # check    : 問題を文字列のリストで返すだけ (throw しない)。テスト用
+      # validate : check の結果を throw に変換する。本番用
+      declaredCheck = import ./nix/lib/declared.nix { inherit lib backends; };
+      inherit (declaredCheck) check validate;
+
       # このリポジトリ自身の宣言 (packages/<pm>.nix)。
-      # 単体で `nix run .#diff` を実行するときのもの
-      declared = lib.genAttrs pms (pm: import ./packages/${pm}.nix);
+      # 単体で `nix run .#diff` を実行するときのもの。
+      # ここで一度検証するので apps / checks は受け取った値そのまま使える
+      declared = validate (lib.genAttrs pms (pm: import ./packages/${pm}.nix));
     in
     {
       # 配布用の公開 API。
       # 他の flake はここ経由で自分の宣言を差し込む (nix/lib/mk-nlp.nix)
       lib = {
-        inherit backends pms;
-        mkNlp = import ./nix/lib/mk-nlp.nix { inherit lib backends; };
+        inherit
+          backends
+          check
+          pms
+          validate
+          ;
+        mkNlp = import ./nix/lib/mk-nlp.nix { inherit lib backends validate; };
       };
     }
     // flake-parts.lib.mkFlake { inherit inputs; } {
@@ -55,9 +69,14 @@
         "aarch64-linux"
       ];
 
-      # app / treefmt から参照する値
+      # app / check から参照する値
       _module.args = {
-        inherit backends declared;
+        inherit
+          backends
+          check
+          declared
+          validate
+          ;
       };
     };
 }

@@ -11,11 +11,15 @@
 #
 # 使い方:
 #   NLP=/path/to/nlp tests/fake-path/run
+#
+# NLP_HOSTILE は任意。宣言の検証 (nix/lib/declared.nix) を意図的に
+# 迂回して作った nlp で、「検証が万一抜けても実行は起きない」ことを確かめる
 set -uo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 stub="$here/stub"
 nlp="${NLP:-}"
+hostile="${NLP_HOSTILE:-}"
 
 fail=0
 total=0
@@ -65,6 +69,33 @@ run() {
   local log
   log="$(mktemp)"
   out="$(env PATH="$dir" STUB_LOG="$log" "$@" "$nlp" "$sub" 2>&1)"
+  rc=$?
+  calls="$(cat "$log" 2>/dev/null)"
+  rm -f "$log"
+}
+
+# run_args <stub-dir> <subcommand> [nlp 引数 ...]
+#   run と同じだが、command 以降は env 変数ではなく nlp の引数として渡す
+run_args() {
+  local dir="$1" sub="$2"
+  shift 2
+  local log
+  log="$(mktemp)"
+  out="$(env PATH="$dir" STUB_LOG="$log" "$nlp" "$sub" "$@" 2>&1)"
+  rc=$?
+  calls="$(cat "$log" 2>/dev/null)"
+  rm -f "$log"
+}
+
+# run_hostile <stub-dir> <subcommand> [env=値 ...]
+#   run と同じだが hostile 版 nlp を呼ぶ。標識ファイルが残っていないかも見る
+run_hostile() {
+  local dir="$1" sub="$2"
+  shift 2
+  local log
+  log="$(mktemp)"
+  rm -f PWNED
+  out="$(env PATH="$dir" STUB_LOG="$log" "$@" "$hostile" "$sub" 2>&1)"
   rc=$?
   calls="$(cat "$log" 2>/dev/null)"
   rm -f "$log"
@@ -251,7 +282,7 @@ else
   ng '照合エラーの終了コード' "期待: 2 / 実際: $rc" "$out"
 fi
 
-if printf '%s' "$out" | grep -q '照合コマンドがエラー'; then
+if printf '%s' "$out" | grep -q '照合コマンドが異常です'; then
   ok '照合エラーの理由を報告する'
 else
   ng '照合エラーの報告' "実際: $out"
@@ -277,13 +308,97 @@ else
   ok '照合エラー時は install を実行しない'
 fi
 
-# apt は不足が無くても stderr に NOTE を出Dividnothing なので、
-# エラー行が無い stderr では止めない
+# apt は不足が無くても stderr に NOTE を出さないので、
+# エラー行の無い stderr では止めない
 run "$p" diff STUB_STDERR='NOTE: This is only a simulation!' STUB_STDOUT='Inst bat (0.25.0-2)'
 if [ "$rc" -eq 0 ]; then
   ok 'NOTE だけの stderr では正常動作する'
 else
   ng 'NOTE だけの stderr' "期待: 0 / 実際: $rc" "$out"
+fi
+
+# stderr に何も出なくても、終了コードが「答え」を示さなければ落とす。
+# apt は実在しない名前があると stderr へ E: を出して 100 で終わるが、
+# メッセージが変わっても終了コードで捕捉できる
+run "$p" diff STUB_RC=100
+if [ "$rc" -eq 2 ]; then
+  ok 'apt が rc=100 で終われば stderr が空でも終了コード 2'
+else
+  ng 'rc=100 の扱い' "期待: 2 / 実際: rc=$rc" "$out"
+fi
+
+# ===========================================================================
+section 'pacman — 不足があるだけなら異常扱いしない'
+# ===========================================================================
+# pacman は不足パッケージがあると
+#   `error: package 'foo' was not found` を stderr に出し、rc=127 で終わる。
+# 「stderr に error: があれば異常」という判定のままだと、
+# 不足があるだけで diff / apply が一生異常終了になる。
+# backend ごとに「答えに対応する終了コード」を持つのはこのため
+p="$(make_path "$d/pacman-noise" pacman)"
+run "$p" diff STUB_STDOUT='man-db' STUB_RC=127 \
+  STUB_STDERR='error: package '"'"'man-db'"'"' was not found'
+
+if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -qE 'missing +1'; then
+  ok 'package ... was not found は異常として扱わない'
+else
+  ng 'pacman の通常の error 行' "期待: rc=0 / missing 1 / 実際: rc=$rc" "$out"
+fi
+
+# 環境側の異常は落とす。判別は宣言側ではなく pm のメッセージ形状で行う
+run "$p" diff STUB_STDERR='error: could not lock database' STUB_RC=1
+if [ "$rc" -eq 2 ]; then
+  ok 'could not lock database は異常として落とす'
+else
+  ng 'pacman の異常 stderr' "期待: 2 / 実際: rc=$rc" "$out"
+fi
+
+# ===========================================================================
+section '引数 — help と見itifない引数'
+# ===========================================================================
+p="$(make_path "$d/args" pacman)"
+
+run_args "$p" diff --help
+if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q 'usage: nix run'; then
+  ok '--help は usage を出して終了コード 0'
+else
+  ng '--help' "期待: rc=0 / 実際: rc=$rc" "$out"
+fi
+
+# app ラッパーは第 1 引数にコマンド名を固定するので、
+# `nix run .#diff -- --help` では $1 が diff、$2 が --help になる
+run_args "$p" status --help
+if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q 'usage: nix run'; then
+  ok '2 番目の引数でも --help を拾う'
+else
+  ng '第 2 引数の --help' "期待: rc=0 / 実際: rc=$rc" "$out"
+fi
+
+# 打った覚えのない引数は黙って無視しない
+run_args "$p" diff --install
+if [ "$rc" -eq 2 ] && printf '%s' "$out" | grep -q 'unexpected argument'; then
+  ok '未知の引数は終了コード 2'
+else
+  ng '未知の引数' "期待: rc=2 / 実際: rc=$rc" "$out"
+fi
+
+# ===========================================================================
+section 'root 権限 — sudo が無い環境'
+# ===========================================================================
+# 素のコマンドへフォールバックしない。黙って非 root で入れるほうが事故になる
+p="$(make_path "$d/nosudo" pacman)"
+rm -f "$d/nosudo/sudo"
+run "$p" apply STUB_STDOUT='man-db' STUB_RC=127
+if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q 'sudo が見つかりません'; then
+  ok 'sudo が無ければ理由を明示して落とす'
+else
+  ng 'sudo 不在' "期待: 落下 / 実際: rc=$rc" "$out"
+fi
+
+if printf '%s' "$calls" | grep -qF 'pacman -S --needed'; then
+  ng 'sudo 不在でも install を実行しない' "install が実行された: $calls"
+else
+  ok 'sudo 不在でも install を実行しない'
 fi
 
 # ===========================================================================
@@ -441,7 +556,54 @@ else
   ng 'status の未検出 pm' "実際: $out"
 fi
 
-rm -rf "$d"
+# ===========================================================================
+section '宣言の検証を迂回しても何も実行されない'
+# ===========================================================================
+# 宣言の検証 (nix/lib/declared.nix) が 1 枚目、埋め込みの引用符と
+# eval 不使用が 2 枚目。hostile 版 nlp は検証を意図的に飛ばして作るので、
+# 「1 枚目が壊れても 2 枚目で止まる」ことを実測する。
+#
+# hostile の宣言: `$(touch PWNED)` / `a b` / `'quoted'` / `x; touch PWNED`
+if [ -z "$hostile" ] || [ ! -x "$hostile" ]; then
+  ng 'hostile nlp が無い' 'NLP_HOSTILE=/nix/store/...-hostile/bin/nlp を渡すこと'
+else
+  p="$(make_path "$d/hostile" pacman)"
+
+  # diff は「副作用なし」を謳っているコマンド。まずここが安全であること
+  run_hostile "$p" diff STUB_ARGV=1 STUB_STDOUT='' STUB_RC=0
+  if [ -e PWNED ]; then
+    ng 'diff で PWNED が作られない' "ファイルが作られた: $(ls -1 PWNED*)"
+  else
+    ok 'diff は宣言からコマンドを一切実行しない'
+  fi
+
+  # 引数が 1 個ずつ决心されていること。空白で裂けていないことの確認
+  if printf '%s\n' "$calls" | grep -Fqx '  ARG $(touch PWNED)'; then
+    ok '$(touch PWNED) は 1 引数として渡る'
+  else
+    ng 'コマンド置換つきの引数' "実際: $calls"
+  fi
+  if printf '%s\n' "$calls" | grep -Fqx '  ARG a b'; then
+    ok '空白つきの名前は 1 引数として渡る'
+  else
+    ng '空白つきの引数' "実際: $calls"
+  fi
+  if printf '%s\n' "$calls" | grep -Fqx "  ARG 'quoted'"; then
+    ok 'シングルクォートつきの名前は 1 引数として渡る'
+  else
+    ng 'クォートつきの引数' "実際: $calls"
+  fi
+
+  # apply は eval を使わない。`; touch PWNED` が 2 本目のコマンドにならない
+  run_hostile "$p" apply STUB_STDOUT='man-db' STUB_RC=127
+  if [ -e PWNED ]; then
+    ng 'apply で PWNED が作られない' "ファイルが作られた: $(ls -1 PWNED*)"
+  else
+    ok 'apply も eval を使わないので ; が命令の区切りにならない'
+  fi
+fi
+
+rm -rf "$d" PWNED
 
 printf '\n'
 if [ "$fail" -eq 0 ]; then

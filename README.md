@@ -72,9 +72,40 @@ $ nix run .#diff
 | man page | `man-db`          | `man-db`          | `man-pages`       | `man`             |
 | 補完     | `bash-completion` | `bash-completion` | `bash-completion` | `bash-completion` |
 
-宣言に**存在しない名前**を1つ混ぜると、pm が異常終了して照合結果が空に
-なる。`nlp` は stderr の `E:` / `error:` を検出して終了コード 2 で止まる
-ので、黙って「不足なし」には見えない。
+### 書けない名前
+
+パッケージ名は `英数字と . + - _ :` だけを使います。
+空白や `$` / `;` / `\`` / glob 文字を含む名前は**評価時にエラー**になる。
+
+```console
+$ nix run .
+error: 2 番目: nlp: packages/pacman.nix の宣言に pm が受理できないパッケージ名があります
+       名前: "ripgrep; rm -rf /"
+```
+
+黙って直さない。空白を含む名前は引数の区切りに裂け、宣言に無い名前を
+黙って落とすと「不足なし」に見える。どちらも嘘になるので、黙って直すより落とす。
+
+| 名前                        | 判定           |
+| --------------------------- | -------------- |
+| `gcc-c++` `python3.11`      | 受理           |
+| `lib32-gtk3` `perl-Foo_bar` | 受理           |
+| `a b` `ripgrep; rm -rf /`   | 評価時にエラー |
+| `x$(id)` `x\`id\``          | 評価時にエラー |
+| `*` `-rf` `foo\tbar`        | 評価時にエラー |
+
+`nix run .` は `packages/<pm>.nix` の宣言を読み、`nlp` を組み立てる前に
+この検査を通す。**コマンドを 1 度も実行する前に**落とす。
+
+宣言に**存在しない名前**(形は正しいが pm が持っていないもの)を混ぜた場合は
+評価時に落ちないので、実行時に落とす。`nlp` は照合コマンドの終了コードと
+stderr を pm ごとに判定し、答えが壊れていれば終了コード 2 で止まる。
+
+```console
+  apt: 照合コマンドが異常です (rc=100)
+  宣言に実在しないパッケージ名があるか、pm が実行できない状態
+    E: Unable to locate package opencode
+```
 
 pm ごとに 1 ファイルなので、対象をまたぐ宣言は素直に書ける。
 
@@ -151,6 +182,8 @@ Boolean, or integer is expected
 | `lib.mkNlp`             | 宣言を受け取って nlp の derivation を返す関数  |
 | `lib.pms`               | 対応している pm 名の一覧                       |
 | `lib.backends`          | pm ごとのコマンド定義（純データ）              |
+| `lib.validate`          | 宣言を検査して、通らなければ throw する関数    |
+| `lib.check`             | 検査だけする。問題を文字列のリストで返す       |
 | `packages.<system>.nlp` | このリポジトリの `packages/*.nix` で組んだ nlp |
 | `apps.<system>.*`       | `diff` / `apply` / `update` / `status`         |
 
@@ -174,8 +207,20 @@ $ nix flake check --all-systems   # 5 pm すべての経路を検証
 $ nix fmt                          # nixfmt / shfmt / statix / deadnix / prettier
 ```
 
-`checks.fake-path` は `tests/fake-path/` のスタブで pm コマンドを差し替え、
-5 pm すべてのコマンド生成と差分計算だけを検証する。
-1 台の Arch 上で apt / dnf / zypper / yum の経路まで通せる。
+3 層で守る。
+
+| check               | 何を見る                                                       |
+| ------------------- | -------------------------------------------------------------- |
+| `checks.eval`       | 宣言の検査が実際に落ちるかを、受理・却下ケースで固定する       |
+| `checks.shellcheck` | 連結前の `nix/lib/script/*.sh` を lint する                    |
+| `checks.fake-path`  | 5 pm すべてのコマンド生成と差分計算を、PATH 差し替えで実測する |
+
+`checks.fake-path` は `tests/fake-path/` のスタブで pm コマンドを差し替える。
+1 台の Arch 上で apt / dnf / zypper / yum の経路まで通せる
+(パッケージの実際の導入・更新は行わない。`sudo` も呼ばない)。
+
+さらに検査を意図的に飛ばした nlp も作らせ、`$(touch PWNED)` のような宣言から
+コマンドが実行されないことを測っている。宣言検査が 1 枚落としても
+実行されないことを固定するため。
 
 設計の詳細は [DESIGN.md](./DESIGN.md) を参照。
