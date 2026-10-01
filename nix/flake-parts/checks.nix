@@ -21,7 +21,7 @@
   perSystem =
     { lib, pkgs, ... }:
     let
-      # apps.nix と必ず同じものを検査する
+      # flake module が組む nlp と必ず同じ定義を検査する
       nlp = import ../lib/nlp.nix {
         inherit
           backends

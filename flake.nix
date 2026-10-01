@@ -43,7 +43,8 @@
     in
     {
       # 配布用の公開 API。
-      # 他の flake はここ経由で自分の宣言を差し込む (nix/lib/mk-nlp.nix)
+      # 他の flake は flakeModules.default を import して nlp.declared を書く。
+      # flake-parts を使わない場合は lib.mkApps / lib.mkNlp (nix/lib/mk-nlp.nix)。
       lib = {
         inherit
           backends
@@ -52,14 +53,25 @@
           validate
           ;
         mkNlp = import ./nix/lib/mk-nlp.nix { inherit lib backends validate; };
+        mkApps = import ./nix/lib/mk-apps.nix { inherit lib backends validate; };
       };
+
+      flakeModules.default = ./nix/flake-module.nix;
     }
     // flake-parts.lib.mkFlake { inherit inputs; } {
       imports = [
-        ./nix/flake-parts/apps.nix
+        ./nix/flake-module.nix
         ./nix/flake-parts/checks.nix
         ./nix/flake-parts/treefmt.nix
       ];
+
+      # このリポジトリ自身の宣言。消費側と同じモジュールを通す。
+      # 接頭辞は空のままにして、今までの `nix run .#diff` を維持する。
+      nlp = {
+        declared = lib.genAttrs pms (pm: import ./packages/${pm}.nix);
+        appPrefix = "";
+        defaultApp = "diff";
+      };
 
       # 実行対象は Linux のみ。
       # pacman / apt / dnf / zypper / yum は Linux のツールなので、

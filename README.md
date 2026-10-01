@@ -111,57 +111,97 @@ pm ごとに 1 ファイルなので、対象をまたぐ宣言は素直に書�
 
 ## 他の flake から使う
 
-このリポジトリは flake input として取り込める。宣言は
-`lib.mkNlp` に渡す。
+このリポジトリは flake input として取り込み、消費側の flake で宣言する。
+実行体はその評価で組み立てられる。導入そのものはホストの pm と `sudo` が要るので、
+`nix build` や評価の途中では走らない。`nix run .#nlp-apply` が、その flake の宣言で動く。
+
+### flake-parts
 
 ```nix
 {
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    flake-parts.url = "github:hercules-ci/flake-parts";
 
     nix-linux-pkg-manager = {
       url = "github:nazozokc/nix-linux-pkg-manager";
-      # 消費側の nixpkgs を使い回す (nixpkgs を二重に引かなくなる)
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
 
   outputs =
-    { nixpkgs, nix-linux-pkg-manager, ... }:
-    let
-      systems = [ "x86_64-linux" ];
-    in {
-      packages = nixpkgs.lib.genAttrs systems (
-        system:
-        {
-          default = nix-linux-pkg-manager.lib.mkNlp {
-            pkgs = nixpkgs.legacyPackages.${system};
-            declared = {
-              pacman = [
-                "man-db"
-                "bash-completion"
-              ];
-            };
-          };
-        }
-      );
+    inputs@{ flake-parts, ... }:
+    flake-parts.lib.mkFlake { inherit inputs; } {
+      imports = [ inputs.nix-linux-pkg-manager.flakeModules.default ];
+
+      systems = [
+        "x86_64-linux"
+        "aarch64-linux"
+      ];
+
+      # 宣言は flake の設定。packages/*.nix を消費側に置かない
+      nlp.declared = {
+        pacman = [
+          "man-db"
+          "bash-completion"
+        ];
+        apt = [
+          "man-db"
+          "bat"
+        ];
+      };
     };
 }
 ```
 
+```console
+$ nix run .#nlp-diff     # 宣言と導入済みを比較 (副作用なし)
+$ nix run .#nlp-apply    # 不足分だけ導入する
+$ nix run .#nlp-update   # pm を更新してから不足分を補う
+$ nix run .#nlp-status   # 検出した pm と宣言の件数
+```
+
+`nlp-` は消費側がもともと持っている `apps.diff` を潰さないための接頭辞。
+空にしたいときは `nlp.appPrefix = ""`。`nix run .` を diff にしたいときは
+`nlp.defaultApp = "diff"`。
+
 `declared` は部分指定でよい。書いた pm だけを使い、書かなかった pm は
 空リスト（`diff` は「宣言なし」と表示）になる。
+
+### flake-parts を使わない場合
+
+`lib.mkApps` が実行体と app 一式を返す。宣言の検査は同じものを通る。
+
+```nix
+outputs =
+  { nixpkgs, nix-linux-pkg-manager, ... }:
+  let
+    systems = [ "x86_64-linux" ];
+    each = system:
+      nix-linux-pkg-manager.lib.mkApps {
+        pkgs = nixpkgs.legacyPackages.${system};
+        declared.pacman = [
+          "man-db"
+          "bash-completion"
+        ];
+      };
+  in
+  {
+    packages = nixpkgs.lib.genAttrs systems (system: {
+      nlp = (each system).package;
+    });
+    apps = nixpkgs.lib.genAttrs systems (system: (each system).apps);
+  };
+```
+
+実行体だけ欲しいときは、これまで通り `lib.mkNlp` が derivation を返す。
 
 宣言に**存在しない名前**を1つ混ぜると、pm が異常終了して照合結果が空に
 なる。`nlp` は stderr の `E:` / `error:` を検出して終了コード 2 で止まる
 ので、黙って「不足なし」には見えない。同じ理由で、未知の pm 名と
-リストでない宣言も `mkNlp` が評価時に落とす。
+リストでない宣言も評価時に落とす。
 
-```console
-$ nix run .
-```
-
-### なぜ input 属性ではなく関数なのか
+### なぜ input 属性ではなく option なのか
 
 flake の input に置けるのは `url` / `follows` / `inputs` だけ。`declared` を
 input に書くと弾かれる。
@@ -172,23 +212,25 @@ error: flake input attribute 'declared' is a thunk while a string,
 Boolean, or integer is expected
 ```
 
-宣言は「値」であり input の位置づけに合わないので、`lib.mkNlp` として
-公開する形にした。
+宣言は「値」なので input には載せず、flake の option（または `lib.mkApps` の引数）
+として渡す。
 
 公開しているもの:
 
-| output                  | 内容                                           |
-| ----------------------- | ---------------------------------------------- |
-| `lib.mkNlp`             | 宣言を受け取って nlp の derivation を返す関数  |
-| `lib.pms`               | 対応している pm 名の一覧                       |
-| `lib.backends`          | pm ごとのコマンド定義（純データ）              |
-| `lib.validate`          | 宣言を検査して、通らなければ throw する関数    |
-| `lib.check`             | 検査だけする。問題を文字列のリストで返す       |
-| `packages.<system>.nlp` | このリポジトリの `packages/*.nix` で組んだ nlp |
-| `apps.<system>.*`       | `diff` / `apply` / `update` / `status`         |
+| output                  | 内容                                                    |
+| ----------------------- | ------------------------------------------------------- |
+| `flakeModules.default`  | flake-parts モジュール。`nlp.declared` から apps を出す |
+| `lib.mkApps`            | 宣言から `{ package, apps }` を返す関数                 |
+| `lib.mkNlp`             | 宣言を受け取って nlp の derivation を返す関数           |
+| `lib.pms`               | 対応している pm 名の一覧                                |
+| `lib.backends`          | pm ごとのコマンド定義（純データ）                       |
+| `lib.validate`          | 宣言を検査して、通らなければ throw する関数             |
+| `lib.check`             | 検査だけする。問題を文字列のリストで返す                |
+| `packages.<system>.nlp` | その flake の宣言で組んだ nlp                           |
+| `apps.<system>.*`       | `diff` / `apply` / `update` / `status`                  |
 
-`apps` はこのリポジトリの宣言を焼き込んだものだから、消費側では
-`lib.mkNlp` の derivation を直接 run する。
+このリポジトリ自身の `apps` は接頭辞なし（`nix run .#diff`）。
+消費側のモジュールは既定で `nlp-diff` のように接頭辞を付ける。
 
 ## 削除をしない理由
 

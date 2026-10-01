@@ -3,8 +3,10 @@
 nix で Linux のパッケージマネージャー (pacman / apt / dnf / zypper / yum) を
 宣言的に管理する。パッケージ自体は各 pm が持つものを使い、Nix は宣言と実行だけを担う。
 
-- 宣言: `packages/<pm>.nix`
+- このリポジトリの宣言: `packages/<pm>.nix`
+- 消費側の宣言: flake の `nlp.declared`（`flakeModules.default`）
 - 実行: `nix run .#diff` / `.#apply` / `.#update` / `.#status`
+  （消費側の既定名は `nlp-diff` など）
 
 ## ファイル構成
 
@@ -17,7 +19,11 @@ nix/lib/backends.nix    5 pm の純粋データ定義
 nix/lib/declared.nix    宣言の検査 (問題を文字列のリストで返す + throw)
 nix/lib/render.nix      ソース連結 + bash の単一引用符リテラル生成
 nix/lib/nlp.nix         実行体 nlp の定義 (apps / checks が共有)
-nix/lib/mk-nlp.nix      他 flake 向けの公開ラッパ
+nix/lib/mk-nlp.nix      他 flake 向けの公開ラッパ (derivation だけ)
+nix/lib/mk-apps.nix     他 flake 向けの公開ラッパ (package + apps)
+nix/lib/apps.nix        実行体から app ラッパーを作る
+
+nix/flake-module.nix    消費側が import する flake-parts モジュール
 
 nix/lib/script/         実行体の中身。1 ファイル 1 責務
   10-runtime.sh           set / 色 / trap / 小さな道具
@@ -29,7 +35,6 @@ nix/lib/script/         実行体の中身。1 ファイル 1 責務
   90-main.sh              引数解釈と入口
 
 nix/flake-parts/
-  apps.nix               apps.{default=diff, apply, update, status}
   checks.nix             eval / shellcheck / fake-path
   treefmt.nix
 
@@ -63,6 +68,18 @@ tests/fake-path/        スタブ実行ファイル + ハーネス
   実行体の分岐が増えない。
 - 宣言検査は「宣言が書けない状態」をビルド前に落とす。実行体の相談に
   ならないので、実行時のエラーメッセージが短くて済む。
+
+## 消費側の配線
+
+flake の input に置けるのは url / follows / inputs だけなので、宣言は input に書けない。
+消費側は `flakeModules.default` を import し、`nlp.declared` にリストを書く。
+モジュールは評価時に `packages.nlp` と `apps.nlp-*` を出す。
+
+このリポジトリ自身も同じモジュールを通す。`nlp.appPrefix = ""` と
+`nlp.defaultApp = "diff"` だけ消費側と違い、`nix run .#diff` を維持する。
+
+導入はホストの pm と sudo が要る。評価や `nix build` では走らせない。
+走らせる入口は、宣言を焼き込んだ app だけ。
 
 ## 生成方法
 

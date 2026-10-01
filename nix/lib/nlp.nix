@@ -1,7 +1,7 @@
 # nix/lib/nlp.nix
 # 実行体 nlp を組み立てる。
 #
-# apps (nix/flake-parts/apps.nix) と tests (nix/flake-parts/checks.nix) の
+# apps (nix/lib/apps.nix) と tests (nix/flake-parts/checks.nix) の
 # 両方から使うので、定義をこの1箇所に閉じる。
 # 両方で組み立てると、テストが古いロジックを検査してしまう
 {

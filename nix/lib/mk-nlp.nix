@@ -1,7 +1,9 @@
 # nix/lib/mk-nlp.nix
 # 配布用の公開関数。
 #
-# 他の flake から宣言を差し込んで nlp を組み立てる:
+# 他の flake から宣言を差し込んで nlp を組み立てる。
+# flake-parts なら flakeModules.default と nlp.declared を使う。
+# これはその下の関数で、実行体だけが欲しいときに呼ぶ。
 #
 #   packages.<system>.default = inputs.nlp.lib.mkNlp {
 #     inherit pkgs;
