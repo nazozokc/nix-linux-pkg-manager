@@ -65,6 +65,30 @@ let
       detail = if a.accepted then "受理された (期待は却下)" else a.detail;
     };
 
+  # import された値をそのまま比べるケース。
+  # 「受理された」だけでは「ファイルの中身が入っている」ことを保証できない
+  #
+  # 宣言は { <pm> = [ ... ]; } の形で書くと、期待値はその pm だけを見る
+  values =
+    c:
+    let
+      name = builtins.elemAt c 0;
+      declared = builtins.elemAt c 1;
+      expected = builtins.elemAt c 2;
+      inherit ((check declared)) normalized;
+
+      # 宣言していない pm は比較しない (必ず空リストになる)
+      picked = lib.filterAttrs (pm: _: lib.hasAttr pm expected) normalized;
+
+      show =
+        a: lib.concatStringsSep " " (lib.mapAttrsToList (pm: v: "${pm}=[${lib.concatStringsSep " " v}]") a);
+    in
+    {
+      inherit name;
+      ok = picked == expected;
+      detail = "期待: ${show expected} / 実際: ${show picked}";
+    };
+
   all =
     map accepts [
       [
@@ -85,6 +109,12 @@ let
         {
           pacman = [ "man-db" ];
           apt = [ "bat" ];
+        }
+      ]
+      [
+        "ファイルの宣言 (import)"
+        {
+          pacman = ./fixtures/list-ok.nix;
         }
       ]
       [
@@ -184,6 +214,56 @@ let
         "attrset でない declared"
         "attrset"
         [ "man-db" ]
+      ]
+
+      # ファイル指定 (import) の却下ケース。
+      # 「リストでない宣言」のメッセージがファイル指定でも出ること、
+      # ファイルの中の不正な名前には出所が出ることを確認する
+      [
+        "import 結果がリストでない"
+        "リストで書いてください"
+        { pacman = ./fixtures/not-list.nix; }
+      ]
+      [
+        "ファイルの中の不正な名前"
+        "fixtures/bad-name.nix"
+        { pacman = ./fixtures/bad-name.nix; }
+      ]
+      [
+        "ファイル指定でも受理できない名前"
+        "受理できない"
+        { pacman = ./fixtures/bad-name.nix; }
+      ]
+    ]
+    ++ map values [
+      [
+        "ファイルの宣言を import する"
+        { pacman = ./fixtures/list-ok.nix; }
+        {
+          pacman = [
+            "man-db"
+            "bash-completion"
+          ];
+        }
+      ]
+      [
+        "パスとインラインが混ざ어도よい"
+        {
+          pacman = ./fixtures/list-ok.nix;
+          apt = [ "bat" ];
+        }
+        {
+          pacman = [
+            "man-db"
+            "bash-completion"
+          ];
+          apt = [ "bat" ];
+        }
+      ]
+      [
+        "ファイルの重複も 1 個に落ちる"
+        { pacman = ./fixtures/list-dup.nix; }
+        { pacman = [ "man-db" ]; }
       ]
     ];
 

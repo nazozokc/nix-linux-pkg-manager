@@ -4,7 +4,9 @@ nix で Linux のパッケージマネージャー (pacman / apt / dnf / zypper 
 宣言的に管理する。パッケージ自体は各 pm が持つものを使い、Nix は宣言と実行だけを担う。
 
 - このリポジトリの宣言: `packages/<pm>.nix`
-- 消費側の宣言: flake の `nlp.declared`（`flakeModules.default`）
+- 消費側の宣言: flake の `nlp.declared`（`flakeModules.default`）、
+  home-manager の `programs.nlp.declared`（`flakeModules.home-manager`）
+- 宣言はインラインのリストでもファイル（import）でも書ける
 - 実行体: `diff` / `apply` / `update` / `status`
 - いつ実行するかは消費側の config が決める。このリポジトリは仕組みだけを出す
 
@@ -24,6 +26,7 @@ nix/lib/mk-apps.nix     他 flake 向けの公開ラッパ (package + apps)
 nix/lib/apps.nix        実行体から app ラッパーを作る
 
 nix/flake-module.nix    消費側が import する flake-parts モジュール
+nix/home-manager-module.nix  home-manager 向けの公開モジュール
 
 nix/lib/script/         実行体の中身。1 ファイル 1 責務
   10-runtime.sh           set / 色 / trap / 小さな道具
@@ -35,16 +38,20 @@ nix/lib/script/         実行体の中身。1 ファイル 1 責務
   90-main.sh              引数解釈と入口
 
 nix/flake-parts/
-  checks.nix             eval / shellcheck / fake-path
+  checks.nix             eval / shellcheck / fake-path / consumer
   treefmt.nix
 
 tests/eval/cases.nix    宣言検査の受理・却下ケース (Nix の式)
+tests/eval/fixtures/    宣言検査のファイル指定 (import) 用 fixture
+tests/consumer/module.nix  公開 API を input に載せる消費側の最小 flake
 tests/fake-path/        スタブ実行ファイル + ハーネス
 ```
 
-`packages/<pm>.nix` は素のリスト。
+`packages/<pm>.nix` は素のリスト。`declared` の値にはこのファイルのパスを
+そのまま渡せる (`nix/lib/declared.nix` が評価時に import する)。
 
 ```nix
+# packages/pacman.nix
 [
   "ripgrep"
   "jq"
@@ -72,11 +79,24 @@ tests/fake-path/        スタブ実行ファイル + ハーネス
 ## 消費側の配線
 
 flake の input に置けるのは url / follows / inputs だけなので、宣言は input に書けない。
-消費側は `flakeModules.default` を import し、`nlp.declared` にリストを書く。
-モジュールは評価時に `packages.nlp` と `apps.nlp-*` を出す。
+宣言は option として渡す。入口は 3 つある。
 
-このリポジトリ自身も同じモジュールを通す。`nlp.appPrefix = ""` と
-`nlp.defaultApp = "diff"` だけ消費側と違い、`nix run .#diff` を維持する。
+| 入口                        | 対象             | 出るもの                         |
+| --------------------------- | ---------------- | -------------------------------- |
+| `flakeModules.default`      | flake-parts      | `packages.nlp` と `apps.nlp-*`   |
+| `flakeModules.home-manager` | home-manager     | `home.packages` の nlp           |
+| `lib.mkApps` / `lib.mkNlp`  | flake-parts 以外 | `{ package, apps }` / derivation |
+
+公開するモジュールは `flake.nix` の `flakeModule` / `homeManagerModule` に 1 箇所だけ書き、
+output と `_module.args` に同じ値を配る。公開しているファイルと
+`checks.consumer` が検査するファイルがずれると、公開 API の検査が意味を失う。
+
+home-manager 側は apps を出さない。`sudo` が要る `apply` / `update` を
+activation に載せないためで、非対話の `switch` と CI を壊さないための判断。
+
+このリポジトリ自身も `flakeModules.default` と同じファイルを通す。
+`nlp.appPrefix = ""` と `nlp.defaultApp = "diff"` だけ消費側と違い、
+`nix run .#diff` を維持する。
 
 導入はホストの pm と sudo が要る。評価や `nix build` では走らせない。
 走らせる入口は、宣言を焼き込んだ app だけ。
@@ -114,6 +134,10 @@ bash-completion'
 - 問題を全部集めてから throw できるので、最初の 1 件で止まらない。
 
 受理するパッケージ名の形は `^[A-Za-z0-9][A-Za-z0-9+._:-]*$`。
+`declared` の値はリストでもパスでもよく、パスは import してから検査する。
+エラーには出所を出す (インラインは `declared.pacman`、ファイルは
+`declared.pacman (<パス>)`)。値だけを見ると、消費側のファイルで書いた名前を
+このリポジトリの `packages/pacman.nix` 由来と誤って報告してしまうため。
 
 ```nix
 # 受理: gcc-c++ python3.11 lib32-gtk3 nvidia-550xx-dkms java-17-openjdk
@@ -200,18 +224,27 @@ autoremove は他パッケージごと巻き込むため、`remove` コマンド
 
 ## 検証
 
-3 層で守る。
+4 層で守る。
 
-| check               | 何を見る                                                     |
-| ------------------- | ------------------------------------------------------------ |
-| `checks.eval`       | 宣言検査が本当に落ちるか。受理・却下ケースを文言ごと比較する |
-| `checks.shellcheck` | 連結前のソースをファイル単位で lint                          |
-| `checks.fake-path`  | 5 pm すべてのコマンド生成と照合を、PATH 差し替えで実測する   |
+| check               | 何を見る                                                      |
+| ------------------- | ------------------------------------------------------------- |
+| `checks.eval`       | 宣言検査が本当に落ちるか。受理・却下ケースを文言ごと比較する  |
+| `checks.shellcheck` | 連結前のソースをファイル単位で lint                           |
+| `checks.fake-path`  | 5 pm すべてのコマンド生成と照合を、PATH 差し替えで実測する    |
+| `checks.consumer`   | 公開 API を実際に input に載せた消費側 flake を評価・起動する |
+
+`checks.consumer` は `flake-parts.lib.mkFlake` に入力一式と
+`tests/consumer/module.nix` を渡して、消費側の flake をそのまま組み立てる。
+`lib.evalModules` で再現すると `perSystem` の型と `apps` / `packages` の
+転置を自作することになり、公開 API 以外の経路を検査してしまう。
+home-manager 側は選択肢が `home.packages` の 1 つだけなので、`lib.evalModules` に
+`home.packages` の型 (listOf package) を再現して評価する。
+生成された `nlp-diff` はビルドして起動し、pm 未検出で止まることまで見る
+(評価が通っても、program が store を指していなければ何も走らない)。
 
 `checks.fake-path` は `tests/fake-path/` のスタブで pm コマンドを差し替える。
-ホストは Arch なので apt / dnf / zypper / yum は実機検証できないが、
-PATH を差し替えれば 1 台の Arch 上で 5 pm すべての経路を通せる
-(パッケージの実際の導入・更新は行わない)。
+ホストに 1 つしかない pm も、PATH を差し替えれば 5 pm すべての経路を通せる
+(パッケージの実際の導入・更新は行わない。`sudo` も呼ばない)。
 
 さらに `checks.fake-path` には **hostile 版 nlp** も渡す。宣言検査を
 意図的に飛ばして作った nlp で、`$(touch PWNED)` や `x; touch PWNED` や

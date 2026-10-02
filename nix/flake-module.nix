@@ -3,6 +3,7 @@
 #
 #   imports = [ inputs.nix-linux-pkg-manager.flakeModules.default ];
 #   nlp.declared.pacman = [ "man-db" "bash-completion" ];
+#   nlp.declared.apt = ./packages/apt.nix;      # ファイルでも書ける
 #
 # 評価すると packages.nlp と apps.nlp-diff / nlp-apply / nlp-update / nlp-status
 # が出る。導入そのものは sudo が要るホスト操作なので、評価や build では走らない。
@@ -39,17 +40,23 @@ in
     };
 
     declared = lib.mkOption {
-      type = lib.types.attrsOf (lib.types.listOf lib.types.str);
+      # リストでもファイルでも書ける。ファイルは評価時に import される
+      # (nix/lib/declared.nix の resolve)
+      type = lib.types.attrsOf (lib.types.either (lib.types.listOf lib.types.str) lib.types.path);
       default = { };
       example = {
         pacman = [
           "man-db"
           "bash-completion"
         ];
-        apt = [ "bat" ];
+        # 1 pm = 1 ファイルに分けるときは、パスをそのまま書ける
+        apt = ./packages/apt.nix;
       };
       description = ''
         パッケージマネージャー名からパッケージ名リストへの宣言。
+        リストでもファイルでも書ける。ファイルは評価時に import され、
+        中身がリストでなければ評価時に落ちる。
+
         書いた pm だけを使う。書かなかった pm は空リストとして扱う。
         未知の pm 名と、pm が受理できないパッケージ名は評価時に落ちる。
       '';
@@ -96,7 +103,7 @@ in
       # config だけを条件にする
       config = lib.mkIf config.nlp.enable {
         packages.nlp = built.package;
-        apps = built.apps;
+        inherit (built) apps;
       };
     };
 }

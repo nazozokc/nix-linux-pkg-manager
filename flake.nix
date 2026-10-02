@@ -40,6 +40,14 @@
       # 単体で `nix run .#diff` を実行するときのもの。
       # ここで一度検証するので apps / checks は受け取った値そのまま使える
       declared = validate (lib.genAttrs pms (pm: import ./packages/${pm}.nix));
+
+      # 公開するモジュール。flakeModules に出力し、
+      # _module.args にも同じ値に入れる。
+      #
+      # 2 箇所に書くと「公開しているファイル」と「検査しているファイル」が
+      # 別のものになりうる。公開 API の check が意味を失うので 1 箇所に寄せる
+      flakeModule = ./nix/flake-module.nix;
+      homeManagerModule = ./nix/home-manager-module.nix;
     in
     {
       # 配布用の公開 API。
@@ -56,7 +64,14 @@
         mkApps = import ./nix/lib/mk-apps.nix { inherit lib backends validate; };
       };
 
-      flakeModules.default = ./nix/flake-module.nix;
+      flakeModules = {
+        # flake-parts の消費側
+        default = flakeModule;
+
+        # home-manager の消費側。home-manager 本体の出力名に揃える。
+        # apps は出さず、home.packages に nlp を載せるだけ
+        home-manager = homeManagerModule;
+      };
     }
     // flake-parts.lib.mkFlake { inherit inputs; } {
       imports = [
@@ -87,6 +102,8 @@
           backends
           check
           declared
+          flakeModule
+          homeManagerModule
           validate
           ;
       };

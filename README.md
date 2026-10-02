@@ -66,6 +66,8 @@ $ nix run .#diff
 
 `packages/<pm>.nix` に素のリストを書くだけ。パッケージ名は、その pm が
 受理する名前で書く。同じ用途でも pm をまたぐと名前が違うことがある。
+消費側の flake から使うときも、このファイルを `declared` に渡す形になる
+（[他の flake から使う](#他の-flake-から使う)）。
 
 | 用途     | pacman            | apt               | dnf               | zypper / yum      |
 | -------- | ----------------- | ----------------- | ----------------- | ----------------- |
@@ -79,9 +81,14 @@ $ nix run .#diff
 
 ```console
 $ nix run .
-error: 2 番目: nlp: packages/pacman.nix の宣言に pm が受理できないパッケージ名があります
+error: nlp: declared.pacman (/nix/store/…-source/packages/pacman.nix) の宣言に
+       pm が受理できないパッケージ名があります
        名前: "ripgrep; rm -rf /"
+       使える文字: 英数字と . + - _ :
 ```
+
+インラインで書いた場合は `declared.pacman` とだけ出るので、
+どの pm のどの宣言が悪いのかがそのまま分かる。
 
 黙って直さない。空白を含む名前は引数の区切りに裂け、宣言に無い名前を
 黙って落とすと「不足なし」に見える。どちらも嘘になるので、黙って直すより落とす。
@@ -141,16 +148,28 @@ pm ごとに 1 ファイルなので、対象をまたぐ宣言は素直に書�
 
       # 宣言は flake の設定。packages/*.nix を消費側に置かない
       nlp.declared = {
-        pacman = [
-          "man-db"
-          "bash-completion"
-        ];
+        # 1 pm = 1 ファイルに分けるときは、パスをそのまま書く。
+        # このリポジトリ自身の packages/<pm>.nix と同じ形
+        pacman = ./packages/pacman.nix;
         apt = [
           "man-db"
           "bat"
         ];
       };
     };
+}
+```
+
+`declared` の値はリストでもパスでもよい。パスは評価時に `import` され、
+中身がリストでなければ評価時に落ちる。混在も許す（pm ごとに 1 つの値）。
+
+```nix
+{
+  # packages/pacman.nix
+  [
+    "man-db"
+    "bash-completion"
+  ]
 }
 ```
 
@@ -175,6 +194,36 @@ $ nix run .#nlp-status   # 検出した pm と宣言の件数
 
 `declared` は部分指定でよい。書いた pm だけを使い、書かなかった pm は
 空リスト（`diff` は「宣言なし」と表示）になる。
+
+### home-manager
+
+home-manager には `flakeModules.home-manager` を置く。出るのは
+`home.packages` に載る nlp だけで、apps は出さない。
+
+```nix
+{
+  imports = [ inputs.nix-linux-pkg-manager.flakeModules.home-manager ];
+
+  programs.nlp = {
+    enable = true;
+    declared.pacman = ./packages/pacman.nix;
+  };
+}
+```
+
+```console
+$ home-manager switch   # nlp が PATH に入るだけ
+$ nlp diff              # 宣言と導入済みを比較 (副作用なし)
+$ nlp apply             # 不足分だけ導入する (switch のあと手動)
+```
+
+`enable` を `false` にすると `home.packages` に入らない。`apply` / `update` は
+`sudo` が要るので **activation では走らせない。** パスワード入力を
+activation に挟むと、非対話の `switch` や CI で必ず詰まる。
+運用は「switch のあとに `nlp apply`」で固定する。
+
+`flakeModules.default` と `flakeModules.home-manager` はどちらも `imports` に置く
+ものだが、同じ config に 2 つ入れてはならない。どちらか 1 つを選ぶ。
 
 ### flake-parts を使わない場合
 
@@ -225,17 +274,18 @@ Boolean, or integer is expected
 
 公開しているもの:
 
-| output                  | 内容                                                    |
-| ----------------------- | ------------------------------------------------------- |
-| `flakeModules.default`  | flake-parts モジュール。`nlp.declared` から apps を出す |
-| `lib.mkApps`            | 宣言から `{ package, apps }` を返す関数                 |
-| `lib.mkNlp`             | 宣言を受け取って nlp の derivation を返す関数           |
-| `lib.pms`               | 対応している pm 名の一覧                                |
-| `lib.backends`          | pm ごとのコマンド定義（純データ）                       |
-| `lib.validate`          | 宣言を検査して、通らなければ throw する関数             |
-| `lib.check`             | 検査だけする。問題を文字列のリストで返す                |
-| `packages.<system>.nlp` | その flake の宣言で組んだ nlp                           |
-| `apps.<system>.*`       | `diff` / `apply` / `update` / `status`                  |
+| output                      | 内容                                                                                |
+| --------------------------- | ----------------------------------------------------------------------------------- |
+| `flakeModules.default`      | flake-parts モジュール。`nlp.declared` から apps を出す                             |
+| `flakeModules.home-manager` | home-manager モジュール。`programs.nlp.declared` から `home.packages` へ nlp を出す |
+| `lib.mkApps`                | 宣言から `{ package, apps }` を返す関数                                             |
+| `lib.mkNlp`                 | 宣言を受け取って nlp の derivation を返す関数                                       |
+| `lib.pms`                   | 対応している pm 名の一覧                                                            |
+| `lib.backends`              | pm ごとのコマンド定義（純データ）                                                   |
+| `lib.validate`              | 宣言を検査して、通らなければ throw する関数                                         |
+| `lib.check`                 | 検査だけする。問題を文字列のリストで返す                                            |
+| `packages.<system>.nlp`     | その flake の宣言で組んだ nlp                                                       |
+| `apps.<system>.*`           | `diff` / `apply` / `update` / `status`                                              |
 
 このリポジトリ自身の `apps` は接頭辞なし（`nix run .#diff`）。
 消費側のモジュールは既定で `nlp-diff` のように接頭辞を付ける。
@@ -257,20 +307,27 @@ $ nix flake check --all-systems   # 5 pm すべての経路を検証
 $ nix fmt                          # nixfmt / shfmt / statix / deadnix / prettier
 ```
 
-3 層で守る。
+4 層で守る。
 
-| check               | 何を見る                                                       |
-| ------------------- | -------------------------------------------------------------- |
-| `checks.eval`       | 宣言の検査が実際に落ちるかを、受理・却下ケースで固定する       |
-| `checks.shellcheck` | 連結前の `nix/lib/script/*.sh` を lint する                    |
-| `checks.fake-path`  | 5 pm すべてのコマンド生成と差分計算を、PATH 差し替えで実測する |
+| check               | 何を見る                                                                   |
+| ------------------- | -------------------------------------------------------------------------- |
+| `checks.eval`       | 宣言の検査が実際に落ちるかを、受理・却下ケースで固定する                   |
+| `checks.shellcheck` | 連結前の `nix/lib/script/*.sh` を lint する                                |
+| `checks.fake-path`  | 5 pm すべてのコマンド生成と差分計算を、PATH 差し替えで実測する             |
+| `checks.consumer`   | 公開 API を入力に載せた消費側 flake を実際に評価して、出た apps を起動する |
 
 `checks.fake-path` は `tests/fake-path/` のスタブで pm コマンドを差し替える。
-1 台の Arch 上で apt / dnf / zypper / yum の経路まで通せる
+ホストに 1 つしかない pm でも、apt / dnf / zypper / yum の経路まで通せる
 (パッケージの実際の導入・更新は行わない。`sudo` も呼ばない)。
 
 さらに検査を意図的に飛ばした nlp も作らせ、`$(touch PWNED)` のような宣言から
 コマンドが実行されないことを測っている。宣言検査が 1 枚落としても
 実行されないことを固定するため。
+
+`checks.consumer` は `tests/consumer/module.nix` を入力に載せた消費側 flake
+として評価する。`lib.evalModules` で再現すると `perSystem` の型と
+`apps` / `packages` の転置を自分で作ることになり、公開 API の経路とは
+別のものを作ってしまう。生成された `nlp-diff` の実物はビルドして起動し、
+pm 未検出で止まることまで見る。
 
 設計の詳細は [DESIGN.md](./DESIGN.md) を参照。

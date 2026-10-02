@@ -1,5 +1,13 @@
 # nix/lib/declared.nix
-# 宣言 (packages/<pm>.nix / lib.mkNlp に渡す declared) の検査。
+# 宣言 (packages/<pm>.nix / nlp.declared / lib.mkNlp の declared) の検査。
+#
+# 宣言の書き方は 2 種。
+#
+#   [ "man-db" "bash-completion" ]   インラインのリスト
+#   ./packages/pacman.nix            ファイル (このリポジトリ自身と同じ形)
+#
+# ファイルはここで import してリストに直す。検査も焼き込みも
+# 「リストだけ」を見ればよくなるので、以降の実装は入力形に依存しない
 #
 # なぜここで落とすのか
 #   宣言は実行時のスクリプトに文字列として埋め込まれる。埋め込み自体は
@@ -35,30 +43,70 @@ let
   # 弾く名前: "ripgrep; rm -rf /" "a b" "$(id)" "foo bar"
   namePattern = "^[A-Za-z0-9][A-Za-z0-9+._:-]*$";
 
-  where = pm: "packages/${pm}.nix";
+  # 宣言の値を「import 済みの中身」に直す。
+  # パス (ファイル) なら import する。宣言の入力形の解釈はこの 1 箇所に閉じる
+  inner = value: if lib.isPath value then import value else value;
+
+  # 出所。エラーメッセージに出す
+  #
+  #   インライン → declared.pacman
+  #   ファイル   → declared.pacman (/nix/store/...-source/packages/pacman.nix)
+  #
+  # 出所を持つのは、値だけを見ていると消費側の ./pkgs/pacman.nix で
+  # 書いた名前が「packages/pacman.nix 由来」と誤って報告されるから。
+  # このリポジトリ自身の packages/<pm>.nix と、消費側のファイルが同じ検査を通る
+  origin =
+    pm: value: if lib.isPath value then "declared.${pm} (${toString value})" else "declared.${pm}";
+
+  # 宣言の値を「出所と値のリスト」に畳む
+  #
+  #   リスト → 1 個ずつ
+  #   パス   → import した中身がリストなら 1 個ずつ、それ以外なら 1 件
+  #
+  # import は評価時に実行される (IFD)。ファイルが無い / 評価できないときは
+  # Nix 自身のエラーがそのまま出る
+  entriesOf =
+    pm: value:
+    let
+      body = inner value;
+      where = origin pm value;
+      entry = v: {
+        origin = where;
+        value = v;
+      };
+    in
+    if lib.isList body then map entry body else [ (entry body) ];
+
+  # 宣言全体を「pm -> (出所と値のリスト)」に畳む。
+  # attrset でなければ空を返す。形そのものは problems 側で報告する
+  resolved = declared: if lib.isAttrs declared then lib.mapAttrs entriesOf declared else { };
 
   # 1 個の宣言の検査結果。問題が無ければ空リスト
   entryProblems =
-    pm: entry:
-    if !lib.isString entry then
+    entry:
+    let
+      where = entry.origin;
+      actual = lib.typeOf entry.value;
+    in
+    if !lib.isString entry.value then
       [
         ''
-          nlp: ${where pm} の宣言は文字列で書いてください
-          実際: ${lib.typeOf entry}
+          nlp: ${where} の宣言は文字列で書いてください
+          実際: ${actual}
         ''
       ]
-    else if entry == "" then
+    else if entry.value == "" then
       [
         ''
-          nlp: ${where pm} の宣言に空文字列は書けません
+          nlp: ${where} の宣言に空文字列は書けません
           空の名前を黙って落とすと宣言件数が狂うので掉落させる
         ''
       ]
-    else if !(builtins.match namePattern entry != null) then
+    else if !(builtins.match namePattern entry.value != null) then
       [
         ''
-          nlp: ${where pm} の宣言に pm が受理できないパッケージ名があります
-          名前: "${entry}"
+          nlp: ${where} の宣言に pm が受理できないパッケージ名があります
+          名前: "${entry.value}"
           使える文字: 英数字と . + - _ :
           注意: 空白・$・;・`・glob 文字を含む名前は、引数の区切りや
                 shell の構文として解釈され照合結果が変わります
@@ -86,10 +134,15 @@ rec {
         # 「不足なし」と嘘をつく
         unknown = lib.filter (pm: !(lib.elem pm pms)) names;
 
-        notList = lib.filter (pm: !(lib.isList declared.${pm} or [ ])) names;
+        entries = resolved declared;
 
-        # 要素まで見るのは「宣言されていて、かつリストである pm」だけ。
-        # pms をそのまま回すと、宣言に無い pm で declared.${pm} が
+        # import した結果がリストでないもの。
+        # 文字列をそのまま書いた (pacman = "man-db") や、
+        # 中身がリストでないファイルもここに落ちる
+        notList = lib.filter (pm: !(lib.isList (inner declared.${pm}))) names;
+
+        # 要素まで見るのは「宣言されていて、かつ import 結果がリストである pm」だけ。
+        # pms をそのまま回すと、宣言に無い pm で entries.${pm} が
         # 属性不存在になって落ちる
         listable = lib.filter (pm: !(lib.elem pm notList)) names;
 
@@ -101,9 +154,9 @@ rec {
           map (
             pm:
             lib.concatLists (
-              lib.imap1 (
-                idx: entry: (map (m: "  ${toString idx} 番目: ${m}") (entryProblems pm entry))
-              ) declared.${pm}
+              lib.imap1 (idx: entry: (map (m: "  ${toString idx} 番目: ${m}") (entryProblems entry))) (
+                entries.${pm} or [ ]
+              )
             )
           ) listable
         );
@@ -121,10 +174,21 @@ rec {
       )
       ++ (
         if notList != [ ] then
-          map (pm: ''
-            nlp: ${where pm} の宣言はリストで書いてください
-            実際: ${lib.typeOf declared.${pm}}
-          '') notList
+          map (
+            pm:
+            let
+              # notList に上がった pm は entries も必ず 1 件以上あるので head が取れる
+              where = (lib.head (entries.${pm} or [ ])).origin;
+              actual = lib.typeOf (inner declared.${pm});
+            in
+            ''
+              nlp: ${where} の宣言はリストで書いてください
+              実際: ${actual}
+              リストでもファイルでも書けます:
+                declared.${pm} = [ "man-db" ];
+                declared.${pm} = ./packages/${pm}.nix;
+            ''
+          ) notList
         else
           [ ]
       )
@@ -139,23 +203,32 @@ rec {
     declared:
     let
       errs = problems declared;
+      entries = resolved declared;
     in
     {
       ok = errs == [ ];
       errors = errs;
       normalized = lib.genAttrs pms (
         pm:
-        # 重複は黙って 1 個に落とす。宣言件数の表示が狂うのを防ぐ
-        lib.unique (declared.${pm} or [ ])
+        # 重複は黙って 1 個に落とす。宣言件数の表示が狂うのを防ぐ。
+        # ファイル指定の宣言も同じ扱いになる (値の比較だけを見るので)
+        lib.unique (lib.map (e: e.value) (entries.${pm} or [ ]))
       );
     };
 
   # 検査して、問題があればまとめて throw する。
   # 問題がなければ正規化した宣言を返す
+  #
+  # 最後に deepSeq を通すのは、ファイル指定の宣言を import してから
+  # 結果を組み立てるため。attrset を返しただけでは中身が未評価で、
+  # import した中の throw や不正な値が後から漏れる
   validate =
     declared:
     let
       c = check declared;
     in
-    if c.ok then c.normalized else throw (lib.concatStringsSep "\n" c.errors);
+    if c.ok then
+      builtins.deepSeq c.normalized c.normalized
+    else
+      throw (lib.concatStringsSep "\n" c.errors);
 }
