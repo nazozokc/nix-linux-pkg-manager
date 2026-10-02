@@ -7,7 +7,7 @@ nix で Linux のパッケージマネージャー (pacman / apt / dnf / zypper 
 - 消費側の宣言: flake の `nlp.declared`（`flakeModules.default`）、
   home-manager の `programs.nlp.declared`（`flakeModules.home-manager`）
 - 宣言はインラインのリストでもファイル（import）でも書ける
-- 実行体: `diff` / `apply` / `update` / `status`
+- 実行体: `diff` / `adopt` / `apply` / `update` / `status`
 - いつ実行するかは消費側の config が決める。このリポジトリは仕組みだけを出す
 
 ## ファイル構成
@@ -19,6 +19,7 @@ packages/<pm>.nix       pm ごとの宣言 (素のリスト)
 
 nix/lib/backends.nix    5 pm の純粋データ定義
 nix/lib/declared.nix    宣言の検査 (問題を文字列のリストで返す + throw)
+nix/lib/names.nix       受理する名前の規則 (検査と adopt の両方が使う)
 nix/lib/render.nix      ソース連結 + bash の単一引用符リテラル生成
 nix/lib/nlp.nix         実行体 nlp の定義 (apps / checks が共有)
 nix/lib/mk-nlp.nix      他 flake 向けの公開ラッパ (derivation だけ)
@@ -34,12 +35,15 @@ nix/lib/script/         実行体の中身。1 ファイル 1 責務
   30-query.sh             宣言と導入済みの照合
   40-detect.sh            ホスト判定
   50-report.sh            出力整形
-  60-commands.sh          diff / apply / update / status
+  60-commands.sh          diff / adopt / apply / update / status
   90-main.sh              引数解釈と入口
 
 nix/flake-parts/
   checks.nix             eval / shellcheck / fake-path / consumer
   treefmt.nix
+
+.github/workflows/ci.yaml    matrix を flake から組み立てる CI
+.github/dependabot.yml       nixpkgs (日次) と GitHub Actions (週次)
 
 tests/eval/cases.nix    宣言検査の受理・却下ケース (Nix の式)
 tests/eval/fixtures/    宣言検査のファイル指定 (import) 用 fixture
@@ -134,6 +138,12 @@ bash-completion'
 - 問題を全部集めてから throw できるので、最初の 1 件で止まらない。
 
 受理するパッケージ名の形は `^[A-Za-z0-9][A-Za-z0-9+._:-]*$`。
+
+この規則は `nix/lib/names.nix` に置き、**検査側と生成側の両方が使う**。
+`adopt` が pm の出力をそのまま宣言へ書くと、`nix run .` が評価時に落ちるのは
+自分で書いた宣言が原因になってしまう。両方同じ定義に寄せないと、その事故は
+不断扩大する。だから `pattern` と説明文 `hint` を 1 箇所に閉じている。
+
 `declared` の値はリストでもパスでもよく、パスは import してから検査する。
 エラーには出所を出す (インラインは `declared.pacman`、ファイルは
 `declared.pacman (<パス>)`)。値だけを見ると、消費側のファイルで書いた名前を
@@ -209,12 +219,42 @@ yum の明示導入判定に `userinstalled` を使わないのは、RHEL 7 の 
 | app      | 副作用 | 内容                                                                      |
 | -------- | ------ | ------------------------------------------------------------------------- |
 | `diff`   | なし   | default。ホスト pm を検出し declared / installed / missing / 未宣言を表示 |
+| `adopt`  | なし   | 明示導入済みを宣言の雛形として標準出力に出す。ファイルは書かない          |
 | `apply`  | あり   | missing を install                                                        |
 | `update` | あり   | pm update を実行し、続けて missing を補充                                 |
 | `status` | なし   | pm 検出結果・lock 保持・宣言件数                                          |
 
 **削除はしない。** 宣言から消えたパッケージは報告のみ。apt / dnf / yum / zypper の
 autoremove は他パッケージごと巻き込むため、`remove` コマンドは backend に持たせない。
+
+## adopt の設計
+
+`adopt` は「宣言をゼロから書きたくない」ための出入口。
+
+**読み取り専用にする。** ファイルは 1 つも書かない。宣言を消す側の操作は
+このツールに持たせない。出力は標準出力、人が読む行はすべて標準エラー。
+この 2 つを混ぜると `> packages/<pm>.nix` のリダイレクトが壊れる
+(ヘッダや注意がファイルに入り、宣言として評価できなくなる)。
+
+`90-main.sh` は通常のコマンド表を標準出力に出さない。`adopt` の標準出力は
+データだからである。
+
+3 つの決定をしている。
+
+- **検出した pm だけ**を出す。5 pm 全部が空の宣言を作らない。
+- **照会が失敗したら偽の空リストを出さない**。終了コード 2 で止まる。
+  空の `[ ]` は「導入済み 0 件」という**正しい形式の宣言**になり、
+  `diff` が常に「不足なし」を見せる。壊れた答えをそのまま書くと、
+  壊れたことに気づけない。
+- **rc=0 で 0 件**は「答えとしては正しい」ので、警告を出しつつ生成する。
+  pm が 1 つも返さないのは異常なので、その点は警告する。
+
+出力は「その pm で明示導入済みのスナップショット」で、**既存宣言への差分ではない。**
+だから既存宣言を消してから使う形は取らず、件数だけ先に知らせる。
+
+宣言検査が却下する名前は除外し、除外したものを stderr に列挙する。
+除外しないと「`nlp adopt > packages/pacman.nix` した直後に `nix run .` が
+評価時エラーになる」という状態を自分で作ってしまう。
 
 ## 権限
 
@@ -250,3 +290,59 @@ home-manager 側は選択肢が `home.packages` の 1 つだけなので、`lib.
 意図的に飛ばして作った nlp で、`$(touch PWNED)` や `x; touch PWNED` や
 空白を含む名前を含む宣言からコマンド実行が起きないことを測る。
 検査を 1 枚落としても実行されないこと (2 枚目の防御) を固定する。
+
+`adopt` も同じハーネスで測る。`STUB_STDOUT` に悪い名前 (`$(touch PWNED)`、
+空白つき) を混ぜても、標準出力に現れず、stderr に列挙されることを固定する。
+照会を失敗させるスタブと、rc=0 で 0 件を返すスタブも作り、
+終了コード 2 と「rc=0 は警告して通る」を分けて固定する。
+
+## CI
+
+matrix を flake から組み立てる。check 名を workflow に書かない。
+
+`nix-github-actions` の `mkGithubMatrix` が `checks` を見て
+`{ attr, name, os, system }` の組を返す。これを `githubActions.matrix.include` に出す。
+
+```console
+$ nix eval --json .#githubActions.matrix.include
+[
+  { "attr" = "checks.aarch64-linux.\"consumer\""; "name" = "consumer";
+    "os" = [ "ubuntu-24.04-arm" ]; "system" = "aarch64-linux" }
+  ...
+]
+```
+
+```nix
+githubActions.lib.mkGithubMatrix {
+  attrPrefix = "checks";
+  system = "x86_64-linux";
+  config.systems = [
+    "x86_64-linux"
+    "aarch64-linux"
+  ];
+  config.rsystems = [
+    "x86_64-linux"
+    "aarch64-linux"
+  ];
+}
+```
+
+`attrPrefix = "checks"` を指定するので、`checks.<system>.<name>` がそのまま
+`nix flake check` の attr になる。workflow 側は
+`nix build -L ".#$CHECK_ATTR"` を 1 行書くだけ。
+
+`attr` は `-` を含む名前を**引用符つきで**出す（`fake-path` → `"fake-path"`）。
+これは Nix の式としては正しいので、`nix build ".#checks.x86_64-linux."fake-path""` と
+直接埋め込むと shell が引用符を剥がして壊れる。だから env 経由で渡す。
+env の値は shell に再解釈されないので、引用符が Nix にそのまま届く。
+
+check を 1 つ足したときは matrix が自動で増える。workflow を編集しなくてよい。
+逆に、workflow に check 名を書くと「check を足したのに CI が走らない」、
+「check を消したのに CI が壊れる」の両方を手で直すことになる。
+
+matrix に `treefmt` を含める。整形を CI に通さないと、整形の出した差分が
+次の check の差分として混ざる。
+
+`dependabot.yml` で nixpkgs を上げる。依存ごとにグループを割り、
+1 PR にまとめている。nixpkgs を 1 つ上げるだけで全部赤になると、
+差分が見えないまま放置される。

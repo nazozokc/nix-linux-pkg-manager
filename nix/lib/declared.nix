@@ -34,14 +34,9 @@
 { lib, backends }:
 
 let
-  pms = lib.attrNames backends;
+  inherit (import ./names.nix) pattern hint;
 
-  # pm が受理するパッケージ名の形。
-  # 素の英数字と . + - _ : だけを許す。空白 / $ / ; / ` / glob 文字はすべて弾く。
-  #
-  # 通る名前: gcc-c++ python3.11 lib32-gtk3 nvidia-550xx-dkms java-17-openjdk
-  # 弾く名前: "ripgrep; rm -rf /" "a b" "$(id)" "foo bar"
-  namePattern = "^[A-Za-z0-9][A-Za-z0-9+._:-]*$";
+  pms = lib.attrNames backends;
 
   # 宣言の値を「import 済みの中身」に直す。
   # パス (ファイル) なら import する。宣言の入力形の解釈はこの 1 箇所に閉じる
@@ -102,12 +97,12 @@ let
           空の名前を黙って落とすと宣言件数が狂うので掉落させる
         ''
       ]
-    else if !(builtins.match namePattern entry.value != null) then
+    else if !(builtins.match pattern entry.value != null) then
       [
         ''
           nlp: ${where} の宣言に pm が受理できないパッケージ名があります
           名前: "${entry.value}"
-          使える文字: 英数字と . + - _ :
+          使える文字: ${hint}
           注意: 空白・$・;・`・glob 文字を含む名前は、引数の区切りや
                 shell の構文として解釈され照合結果が変わります
         ''

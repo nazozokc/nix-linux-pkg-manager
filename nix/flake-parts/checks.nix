@@ -202,9 +202,10 @@ in
       homeOnPackages = homeOn.home.packages or [ ];
       homeOffPackages = homeOff.home.packages or [ ];
 
-      # 接頭辞 nlp- の 4 コマンド + apps.default (defaultApp = "diff")
+      # 接頭辞 nlp- の 5 コマンド + apps.default (defaultApp = "diff")
       expectedApps = [
         "default"
+        "nlp-adopt"
         "nlp-apply"
         "nlp-diff"
         "nlp-status"

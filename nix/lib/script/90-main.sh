@@ -14,9 +14,14 @@ nix-linux-pkg-manager — 宣言的に Linux のパッケージマネージャ�
 usage: nix run .#<command>
 
   diff     宣言と導入済みを比較する (default / 副作用なし)
+  adopt    明示導入済みを宣言の雛形として出す (副作用なし)
   apply    不足しているパッケージを導入する
   update   パッケージマネージャーを更新してから不足分を補う
   status   検出したパッケージマネージャーと宣言の件数
+
+adopt は標準出力に宣言そのものだけを出します。人が読む行は標準エラーです。
+
+  nix run .#adopt > packages/pacman.nix
 USAGE
 }
 
@@ -29,7 +34,7 @@ main() {
   fi
 
   case "$cmd" in
-  diff | apply | update | status) ;;
+  diff | apply | update | status | adopt) ;;
   -h | --help | help)
     usage
     return 0
@@ -63,10 +68,18 @@ main() {
     return 1
   fi
 
-  printf '  %s%s · %s · %s%s\n' "$C_D" "$cmd" "$(host_id)" "${PM_LABEL[$pm]}" "$C_0"
+  # adopt は標準出力が宣言そのものになる。人が読む行をここへ混ぜると
+  # `nlp adopt > packages/<pm>.nix` が壊れるので、この行だけ出さない
+  case "$cmd" in
+  adopt) ;;
+  *)
+    printf '  %s%s · %s · %s%s\n' "$C_D" "$cmd" "$(host_id)" "${PM_LABEL[$pm]}" "$C_0"
+    ;;
+  esac
 
   case "$cmd" in
   diff) do_diff "$pm" ;;
+  adopt) do_adopt "$pm" ;;
   apply) do_apply "$pm" ;;
   update) do_update "$pm" ;;
   status) do_status "$pm" ;;

@@ -20,6 +20,8 @@
 #   PM_MISSING_ERROR    stderr に現れたら異常とみなすパターン (1行1個)
 #   PM_INSTALL          導入コマンド (@PKGS@ が宣言列の位置を示す)
 #   PM_UPDATE           更新コマンド (1行1個。sudo を個別に付けるため)
+#   PM_NAME_PATTERN     pm が受理するパッケージ名の形 (nix/lib/names.nix)
+#   PM_NAME_HINT        その規則の説明。adopt が除外した名前を説明するときに使う
 #   DECLARED            宣言 (1行1個)
 
 # このファイルは「器」だけで、読むのは連結後のスクリプト側。

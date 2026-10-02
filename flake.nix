@@ -12,12 +12,20 @@
       url = "github:numtide/treefmt-nix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+
+    # checks.<system>.<name> を GitHub Actions の matrix に落とす。
+    # CI 専用 (.github/workflows/ci.yaml が読むだけ) なので、値を公開 API には出さない
+    nix-github-actions = {
+      url = "github:nix-community/nix-github-actions";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
     inputs@{
       nixpkgs,
       flake-parts,
+      nix-github-actions,
       ...
     }:
     let
@@ -48,6 +56,43 @@
       # 別のものになりうる。公開 API の check が意味を失うので 1 箇所に寄せる
       flakeModule = ./nix/flake-module.nix;
       homeManagerModule = ./nix/home-manager-module.nix;
+
+      # flake-parts が出力全体。下の outputs へそのまま混ぜて公開する
+      parts = flake-parts.lib.mkFlake { inherit inputs; } {
+        imports = [
+          ./nix/flake-module.nix
+          ./nix/flake-parts/checks.nix
+          ./nix/flake-parts/treefmt.nix
+        ];
+
+        # このリポジトリ自身の宣言。消費側と同じモジュールを通す。
+        # 接頭辞は空のままにして、今までの `nix run .#diff` を維持する。
+        nlp = {
+          declared = lib.genAttrs pms (pm: import ./packages/${pm}.nix);
+          appPrefix = "";
+          defaultApp = "diff";
+        };
+
+        # 実行対象は Linux のみ。
+        # pacman / apt / dnf / zypper / yum は Linux のツールなので、
+        # darwin を systems に入れても評価する価値がない
+        systems = [
+          "x86_64-linux"
+          "aarch64-linux"
+        ];
+
+        # app / check から参照する値
+        _module.args = {
+          inherit
+            backends
+            check
+            declared
+            flakeModule
+            homeManagerModule
+            validate
+            ;
+        };
+      };
     in
     {
       # 配布用の公開 API。
@@ -72,40 +117,25 @@
         # apps は出さず、home.packages に nlp を載せるだけ
         home-manager = homeManagerModule;
       };
+
+      # CI 用の matrix。.github/workflows/ci.yaml が nix eval で読むだけ
+      #
+      # attrPrefix を "checks" にするのは、既定値が "githubActions.checks" で
+      # そこに無い属性を指してしまうため。CI は
+      # `nix build '.#checks.<system>."<name>"'` を実行するので、ここが
+      # 一致していないと matrix が実在しない attr を出力する
+      githubActions = nix-github-actions.lib.mkGithubMatrix {
+        inherit (parts) checks;
+        attrPrefix = "checks";
+
+        # 既定の表に任せずはっきり書く。上流が既定値を変えても、
+        # CI が黙って別の runner に移らないようにするため
+        platforms = {
+          # arm64 は GitHub の標準 runner (公開 repo なら追加費用なし)
+          "aarch64-linux" = "ubuntu-24.04-arm";
+          "x86_64-linux" = "ubuntu-24.04";
+        };
+      };
     }
-    // flake-parts.lib.mkFlake { inherit inputs; } {
-      imports = [
-        ./nix/flake-module.nix
-        ./nix/flake-parts/checks.nix
-        ./nix/flake-parts/treefmt.nix
-      ];
-
-      # このリポジトリ自身の宣言。消費側と同じモジュールを通す。
-      # 接頭辞は空のままにして、今までの `nix run .#diff` を維持する。
-      nlp = {
-        declared = lib.genAttrs pms (pm: import ./packages/${pm}.nix);
-        appPrefix = "";
-        defaultApp = "diff";
-      };
-
-      # 実行対象は Linux のみ。
-      # pacman / apt / dnf / zypper / yum は Linux のツールなので、
-      # darwin を systems に入れても評価する価値がない
-      systems = [
-        "x86_64-linux"
-        "aarch64-linux"
-      ];
-
-      # app / check から参照する値
-      _module.args = {
-        inherit
-          backends
-          check
-          declared
-          flakeModule
-          homeManagerModule
-          validate
-          ;
-      };
-    };
+    // parts;
 }

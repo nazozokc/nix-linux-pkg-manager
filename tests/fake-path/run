@@ -101,6 +101,24 @@ run_hostile() {
   rm -f "$log"
 }
 
+# run_split <stub-dir> <subcommand> [env=値 ...]
+#   run と同じだが標準出力と標準エラーを分けて取る。
+#   adopt は「標準出力が宣言そのもの」という契約があるので、混ぜると検査できない。
+#   結果 → $out (stdout) / $err (stderr) / $calls / $rc
+run_split() {
+  local dir="$1" sub="$2"
+  shift 2
+  local log errfile
+  log="$(mktemp)"
+  errfile="$(mktemp)"
+  rm -f PWNED
+  out="$(env PATH="$dir" STUB_LOG="$log" "$@" "$nlp" "$sub" 2>"$errfile")"
+  rc=$?
+  calls="$(cat "$log" 2>/dev/null)"
+  err="$(cat "$errfile" 2>/dev/null)"
+  rm -f "$log" "$errfile"
+}
+
 if [ -z "$nlp" ] || [ ! -x "$nlp" ]; then
   printf '  \033[31mFAIL\033[0m nlp が無い: %s\n' "${nlp:-<未設定>}"
   printf '       NLP=/nix/store/...-nlp/bin/nlp を渡すこと\n'
@@ -554,6 +572,183 @@ if printf '%s' "$out" | grep -qE 'apt +\(not found\)'; then
   ok 'status は未導入の pm も一覧する'
 else
   ng 'status の未検出 pm' "実際: $out"
+fi
+
+# ===========================================================================
+section 'adopt — 明示導入済みを宣言の雛形として出す'
+# ===========================================================================
+# 契約は 3 つ。
+#   1 標準出力は Nix のリストだけ。人が読む行はすべて標準エラー
+#   2 照会が壊れていれば空のリストを出さない (「導入済み 0 件」は嘘になる)
+#   3 宣言検査 (nix/lib/names.nix) を通さない名前は宣言に入れない。
+#     そしてそれを標準エラーに列挙する
+p="$(make_path "$d/adopt" pacman)"
+
+run_split "$p" adopt STUB_STDOUT='vim
+git
+man-db'
+
+if [ "$rc" -eq 0 ]; then
+  ok 'adopt は終了コード 0'
+else
+  ng 'adopt の終了コード' "期待: 0 / 実際: rc=$rc" "$err"
+fi
+
+if printf '%s' "$calls" | grep -Fqx 'pacman -Qqe'; then
+  ok '明示導入を pacman -Qqe で照会する'
+else
+  ng 'adopt の照会コマンド' "実際: $calls"
+fi
+
+# 副作用なし。照会以外のコマンドは出ない
+if printf '%s' "$calls" | grep -qvFqx 'pacman -Qqe'; then
+  ng 'adopt は照会しか呼ばない' "照会以外が呼ばれた: $calls"
+else
+  ok 'adopt は照会しか呼ばない'
+fi
+
+if printf '%s' "$calls" | grep -qE '(^| )(sudo|pacman -S|pacman -Sy)'; then
+  ng 'adopt は sudo / install を呼ばない' "実際: $calls"
+else
+  ok 'adopt は sudo / install を呼ばない'
+fi
+
+# 標準出力が「宣言そのもの」であること。
+# 人が読む 1 行でも混ざると `adopt > packages/<pm>.nix` が壊れる
+if printf '%s\n' "$out" | grep -qE '^(  (adopt|diff|注意|lookup))' || printf '%s' "$out" | grep -q ' · '; then
+  ng '標準出力に人が読む行が混ざらない' "混ざっている: $out"
+else
+  ok '標準出力に人が読む行が混ざらない'
+fi
+
+if printf '%s\n' "$out" | grep -qFx '[' && printf '%s\n' "$out" | grep -qFx ']'; then
+  ok '標準出力が Nix のリストになる'
+else
+  ng '標準出力のリスト' "期待: [ ... ] / 実際: $out"
+fi
+
+for want in vim git man-db; do
+  if printf '%s\n' "$out" | grep -qFx "  \"$want\""; then
+    ok "明示導入済みを宣言に入れる ($want)"
+  else
+    ng "宣言の中身 ($want)" "実際: $out"
+  fi
+done
+
+# 生成したファイルがそのまま packages/<pm>.nix として使えること。
+# 照合コマンドの説明はコメントとして入る
+if printf '%s\n' "$out" | grep -qFx '# packages/pacman.nix — pacman で導入するパッケージ'; then
+  ok 'ヘッダにファイル名と pm 名が出る'
+else
+  ng 'ヘッダ' "実際: $out"
+fi
+
+if printf '%s\n' "$out" | grep -q '照合は `pacman -T` で行います。'; then
+  ok '照合コマンドの説明をコメントに書く'
+else
+  ng '照合コマンドの説明' "実際: $out"
+fi
+
+# この nlp は 5 pm 全部に宣言が入っているので、注意が出る。
+# 出力には「上書きはしない」としか書いていない
+if printf '%s' "$err" | grep -q '既に 2 件の宣言があります'; then
+  ok '既存の宣言件数を知らせる (上書き防止)'
+else
+  ng '既存宣言の警告' "期待: 既に 2 件 / 実際: $err"
+fi
+
+# --- 宣言検査を通さない名前は入らない ---
+# pm の出力を信用しない。$(touch PWNED) や空白つき名前が混ざっていても
+# 実行が起きず、宣言にも残らない
+run_split "$p" adopt STUB_STDOUT='vim
+$(touch PWNED)
+a b
+x; touch PWNED
+man-db'
+
+if [ -e PWNED ]; then
+  ng 'adopt で PWNED が作られない' "ファイルが作られた: $(ls -1 PWNED* 2>/dev/null)"
+else
+  ok 'adopt は宣言からコマンドを一切実行しない'
+fi
+
+if printf '%s\n' "$out" | grep -qE '(PWNED|a b|touch)'; then
+  ng 'pm が受理できない名前は宣言に入れない' "混入した: $out"
+else
+  ok 'pm が受理できない名前は宣言に入れない'
+fi
+
+if printf '%s\n' "$out" | grep -qFx '  "vim"' && printf '%s\n' "$out" | grep -qFx '  "man-db"'; then
+  ok '受理できる名前だけを残す'
+else
+  ng '受理できる名前の残り' "実際: $out"
+fi
+
+# 黙って落とさない。落ちた名前は標準エラーに列挙する
+if printf '%s' "$err" | grep -q 'pm が受理できないパッケージ名を宣言から外しました'; then
+  ok '除外した名前を知らせる'
+else
+  ng '除外した名前の報告' "実際: $err"
+fi
+
+if printf '%s' "$err" | grep -qF '$(touch PWNED)'; then
+  ok '除外した名前を 1 行ずつ見せる'
+else
+  ng '除外した名前の一覧' "実際: $err"
+fi
+
+# --- 壊れた答えで空の宣言を作らない ---
+# 照会に失敗したまま [ ] を出すと、それが「導入済み 0 件」の宣言になる。
+# diff が常に「不足なし」になる嘘なので、終了コード 2 で止める
+run_split "$p" adopt STUB_RC=1
+
+if [ "$rc" -eq 2 ]; then
+  ok '照会が失敗したら終了コード 2'
+else
+  ng '照会失敗の終了コード' "期待: 2 / 実際: rc=$rc"
+fi
+
+if printf '%s' "$out" | grep -qF '['; then
+  ng '照会失敗時はリストを出さない' "リストが出た: $out"
+else
+  ok '照会失敗時はリストを出さない'
+fi
+
+if printf '%s' "$err" | grep -q '明示導入の照会が失敗しました'; then
+  ok '照会失敗の理由を報告する'
+else
+  ng '照会失敗の報告' "実際: $err"
+fi
+
+# stderr に何か出ているなら、pm の stderr をそのまま見せる
+run_split "$p" adopt STUB_RC=1 STUB_STDERR='error: could not open database'
+if printf '%s' "$err" | grep -q 'could not open database'; then
+  ok 'pm の stderr をそのまま見せる'
+else
+  ng 'pm の stderr の提示' "実際: $err"
+fi
+
+# --- 答えが空でも rc=0 なら「導入済み 0 件」は正直な答え ---
+# rc=0 で 1 件も返らないのは、素のシステムならあり得る状態。
+# 黙って空の宣言にはせず、知らせる
+run_split "$p" adopt STUB_STDOUT='' STUB_RC=0
+
+if [ "$rc" -eq 0 ]; then
+  ok 'rc=0 で空なら正常終了する'
+else
+  ng 'rc=0 空の扱い' "期待: 0 / 実際: rc=$rc" "$err"
+fi
+
+if printf '%s\n' "$out" | grep -qFx ']' && ! printf '%s\n' "$out" | grep -q '  "'; then
+  ok '空のときもリストの形は崩さない'
+else
+  ng '空リストの形' "実際: $out"
+fi
+
+if printf '%s' "$err" | grep -q '明示導入済みが 1 個も返りませんでした'; then
+  ok '空の答えを知らせる'
+else
+  ng '空の答えの報告' "実際: $err"
 fi
 
 # ===========================================================================

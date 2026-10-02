@@ -1,8 +1,15 @@
 # shellcheck shell=bash
-# nix/lib/script/60-commands.sh — 4 つのサブコマンド
+# nix/lib/script/60-commands.sh — サブコマンドの実装
 #
 # 責務は「どのサブコマンドが何をするか」だけ。
 # 照合は 30-query.sh、pm データは 20-registry.sh、整形は 50-report.sh。
+#
+# 副作用の分類 (README のコマンド表と同じ)
+#   なし   diff / status / adopt
+#   あり   apply / update
+#
+# adopt だけは標準出力が「データ」(宣言そのもの) になる。
+# 人が読む行はすべて標準エラーへ出す前提で書いている
 #
 # root 権限の扱い
 #   ここが root 実行の唯一の場所。sudo がないときに素のコマンドへ
@@ -87,6 +94,102 @@ do_diff() { # <pm>
     "${PM_LABEL[$pm]}" "$C_D" "$n_declared" "$C_0"
   printf '\n'
   print_counts "$missing" "$installed" "$unmanaged"
+}
+
+# 明示導入済みパッケージを、宣言の雛形として標準出力に出す (副作用なし)
+#
+# ファイルは書かない。nlp が壊すものはない (pm が導入済みを所有している) ので
+# 破壊する経路も opt-in も必要ない。nix-homebrew の autoMigrate は
+# 「既存を消して宣言に置き換える」ために確認を要求したが、
+# ここでは読み取るだけなので確認の段階が存在しない
+#
+# 標準出力は「宣言そのもの」だけにする。人が読む行はすべて標準エラーへ出す。
+# ここへ 1 行でも混ざると `nlp adopt > packages/<pm>.nix` が壊れたファイルになる
+#
+# 照会が失敗したら空のリストは出さない。空の [ ] は「導入済み 0 件」という
+# 宣言になり、diff が常に「不足なし」になる。壊れた答えをそのまま書くと
+# 嘘が宣言に焼き付くので、終了コード 2 で止まる
+do_adopt() { # <pm>
+  local pm="$1" raw rc kept dropped query n_declared
+
+  : >"$NLP_STDERR"
+  if raw="$(run_query "${PM_EXPLICIT[$pm]}" 2>"$NLP_STDERR")"; then
+    rc=0
+  else
+    rc=$?
+  fi
+
+  if [ "$rc" -ne 0 ]; then
+    printf '  %s%s: 明示導入の照会が失敗しました (rc=%s)%s\n' "$C_R" "$pm" "$rc" "$C_0" >&2
+    printf '  %s空のリストは「導入済み 0 件」という宣言になるので作りません%s\n' \
+      "$C_D" "$C_0" >&2
+    sed 's/^/    /' "$NLP_STDERR" >&2
+    return 2
+  fi
+
+  # 宣言検査と同じ形を通す (PM_NAME_PATTERN は nix/lib/names.nix)。
+  # 落ちた名前は黙って捨てない。黙って捨てると「宣言に無い」のが
+  # 「除外した結果」なのか「元から無かった」のか区別できなくなる
+  kept="$(printf '%s\n' "$raw" | sed '/^[[:space:]]*$/d' | grep -E "$PM_NAME_PATTERN" || true)"
+  dropped="$(printf '%s\n' "$raw" | sed '/^[[:space:]]*$/d' | grep -vE "$PM_NAME_PATTERN" || true)"
+  kept="$(printf '%s\n' "$kept" | sort -u)"
+  dropped="$(printf '%s\n' "$dropped" | sort -u)"
+
+  if [ -n "$dropped" ]; then
+    printf '  %s%s: pm が受理できないパッケージ名を宣言から外しました%s\n' \
+      "$C_Y" "$pm" "$C_0" >&2
+    print_list 20 "$dropped" >&2
+    printf '  %s使える文字: %s%s\n' "$C_D" "$PM_NAME_HINT" "$C_0" >&2
+  fi
+
+  if [ -z "$kept" ]; then
+    printf '  %s%s: 明示導入済みが 1 個も返りませんでした%s\n' "$C_Y" "$pm" "$C_0" >&2
+    printf '  %s空の宣言を生成します。pm が動いているか確認してください%s\n' "$C_D" "$C_0" >&2
+  fi
+
+  # 出力は「導入済み全部」のスナップショットで、既存宣言への差分ではない。
+  # 黙って上書きさせないために、宣言があるときは先に言っておく
+  n_declared="$(count_lines "$(declared_of "$pm")")"
+  if [ "$n_declared" -gt 0 ]; then
+    printf '  %s注意%s  %s には既に %s 件の宣言があります。adopt は導入済み全部を出します\n' \
+      "$C_Y" "$C_0" "$pm" "$n_declared" >&2
+    printf '  %s上書きせず、既存宣言と共通する名前を消してから使ってください%s\n' \
+      "$C_D" "$C_0" >&2
+  fi
+
+  # 照合コマンド。@PKGS@ を宣言に置き換えた位置だけ削って、
+  # 生成したファイルのコメントに実際の照合方法を書く
+  query="${PM_MISSING[$pm]//@PKGS@/}"
+  query="${query# }"
+  query="${query% }"
+
+  printf '# packages/%s.nix — %s で導入するパッケージ\n' "$pm" "$pm"
+  printf '#\n'
+  printf '# nlp adopt が生成しました (ホスト: %s)。\n' "$(host_id)"
+  printf '# 明示導入済みパッケージをそのまま列挙しています。\n'
+  printf '#\n'
+  printf '# ここに書くのは「システムのリソース」だけ。\n'
+  printf '#   - /etc の設定、/usr/share/man の man page\n'
+  printf '#   - systemd unit、カーネルモジュール、firmware\n'
+  printf '# 逆に、ユーザーの製品 (エディタ、言語ランタイム、CLI ツール) は\n'
+  printf '# Nix (home-manager の home.packages) 経由で入れる。ここには書かない。\n'
+  printf '# 二重管理になり、片方だけ古いと事故る。\n'
+  printf '#\n'
+  printf '# 宣言から外したパッケージは削除されません。unmanaged として\n'
+  printf '# 報告されるだけで、何もしません。\n'
+  printf '#\n'
+  # backtick を書くと lint が SC2016 を出すので printf の \x60 で出す。
+  # 生成する Nix のコメントは packages/<pm>.nix に倣って `cmd` で囲む
+  printf '# 照合は \x60%s\x60 で行います。\n' "$query"
+  printf '\n'
+  printf '[\n'
+  if [ -n "$kept" ]; then
+    # namePattern が " を弾いているので、引用符で囲むだけで Nix の文字列になる。
+    # 行全体を置換する形にしてあるのは、末尾に $ アンカーを書くと
+    # lint が SC2016 (単一引用符 = 展開されない) を出すため
+    printf '%s\n' "$kept" | sed 's/.*/  "&"/'
+  fi
+  printf ']\n'
 }
 
 # 不足分を導入する

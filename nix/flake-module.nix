@@ -5,8 +5,9 @@
 #   nlp.declared.pacman = [ "man-db" "bash-completion" ];
 #   nlp.declared.apt = ./packages/apt.nix;      # ファイルでも書ける
 #
-# 評価すると packages.nlp と apps.nlp-diff / nlp-apply / nlp-update / nlp-status
-# が出る。導入そのものは sudo が要るホスト操作なので、評価や build では走らない。
+# 評価すると packages.nlp と
+# apps.nlp-diff / nlp-adopt / nlp-apply / nlp-update / nlp-status が出る。
+# 導入そのものは sudo が要るホスト操作なので、評価や build では走らない。
 # `nix run .#nlp-apply` が、この flake の宣言を焼き込んだ実行体になる。
 #
 # オプションは flake 直下に置く。宣言は system ではなくホストの pm の話なので、
@@ -23,6 +24,7 @@ let
 
   commandNames = [
     "diff"
+    "adopt"
     "apply"
     "update"
     "status"

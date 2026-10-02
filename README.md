@@ -14,6 +14,12 @@ Linux パッケージを導入する。パッケージ自体を Nix store には
 これを `nix run` すると、`pacman` が何済みで何が足りないかを報告し、
 `apply` で不足分だけ導入する。
 
+宣言を 1 つも書きたくないときは `adopt` が雛形を出す。
+
+```console
+$ nix run .#adopt > packages/pacman.nix
+```
+
 ## 対応 pm
 
 | pm     | 実行ファイル | 不足判定                         |
@@ -32,13 +38,53 @@ Linux パッケージを導入する。パッケージ自体を Nix store には
 ```console
 $ nix run .              # diff と同じ
 $ nix run .#diff         # 宣言と導入済みを比較 (副作用なし)
+$ nix run .#adopt        # 明示導入済みを宣言の雛形として出す (副作用なし)
 $ nix run .#apply        # 不足分だけ導入する
 $ nix run .#update       # pm を更新してから不足分を補う
 $ nix run .#status       # 検出した pm と宣言の件数
 ```
 
 `diff` と `status` は pm を一切変更しない。`apply` / `update` だけが
-`sudo` を使う。
+`sudo` を使う。`adopt` も pm を変更しない（**ファイルも書かない**）。
+出力は標準出力、人が読む行と注意はすべて標準エラーへ出る。
+
+### adopt
+
+宣言をゼロから書く必要をなくす。既に入っているパッケージを、宣言の雛形として
+標準出力に出す。`> packages/<pm>.nix` でそのままリダイレクトできる。
+
+```console
+$ nix run .#adopt > packages/apt.nix
+
+  注意  packages/apt.nix には既に 3 件の宣言があります。
+        adopt は導入済み全部を出します。上書きせず、既存宣言と共通する名前を
+        消してから使ってください
+```
+
+出るのは「その pm で明示導入済み」のスナップショットで、既存宣言への差分では
+ない。だから既存宣言を消してから使う形は取らない。
+
+```console
+$ nix run .#adopt
+
+  # packages/apt.nix — apt で導入するパッケージ
+  #
+  # 明示導入済みパッケージをそのまま列挙しています。
+  #   - ここに書くのは「システムのリソース」だけ。
+  #   - 依存として入ったものは含みません。
+  #   - Nix (home-manager の home.packages) 経由で入れる。ここには書かない。
+  #   - 照合は `apt-get install --simulate` で行います。
+  [
+    "bat"
+    "man-db"
+  ]
+```
+
+- pm が検出しなかったものは出さない（5 pm 全部が Garett になるわけではない）
+- 宣言検査が却下する名前は除外し、stderr に列挙する
+  （pm の出力をそのまま宣言にすると、**評価時に落ちる宣言**を自分で作ってしまう）
+- 照会が失敗したら偽の空リストは出さず、終了コード 2 で止まる
+  （空の `[ ]` は「導入済み 0 件」という宣言になり、`diff` が常に「不足なし」になる）
 
 ### 出る情報
 
@@ -103,6 +149,10 @@ error: nlp: declared.pacman (/nix/store/…-source/packages/pacman.nix) の宣�
 
 `nix run .` は `packages/<pm>.nix` の宣言を読み、`nlp` を組み立てる前に
 この検査を通す。**コマンドを 1 度も実行する前に**落とす。
+
+この規則は宣言検査と `adopt` で同じ定義を使う。`adopt` が pm の出力を
+そのまま宣言へ書くと、`nix run .` が評価時に落ちるのは自分で作った
+宣言が原因になってしまう。だから `adopt` 側でも却下される名前を外す。
 
 宣言に**存在しない名前**(形は正しいが pm が持っていないもの)を混ぜた場合は
 評価時に落ちないので、実行時に落とす。`nlp` は照合コマンドの終了コードと
@@ -183,6 +233,7 @@ apps.switch = config.apps.nlp-apply;
 
 ```console
 $ nix run .#nlp-diff     # 宣言と導入済みを比較 (副作用なし)
+$ nix run .#nlp-adopt    # 明示導入済みを宣言の雛形として出す (副作用なし)
 $ nix run .#nlp-apply    # 不足分だけ導入する
 $ nix run .#nlp-update   # pm を更新してから不足分を補う
 $ nix run .#nlp-status   # 検出した pm と宣言の件数
@@ -214,6 +265,7 @@ home-manager には `flakeModules.home-manager` を置く。出るのは
 ```console
 $ home-manager switch   # nlp が PATH に入るだけ
 $ nlp diff              # 宣言と導入済みを比較 (副作用なし)
+$ nlp adopt             # 明示導入済みを宣言の雛形として出す (副作用なし)
 $ nlp apply             # 不足分だけ導入する (switch のあと手動)
 ```
 
@@ -285,7 +337,7 @@ Boolean, or integer is expected
 | `lib.validate`              | 宣言を検査して、通らなければ throw する関数                                         |
 | `lib.check`                 | 検査だけする。問題を文字列のリストで返す                                            |
 | `packages.<system>.nlp`     | その flake の宣言で組んだ nlp                                                       |
-| `apps.<system>.*`           | `diff` / `apply` / `update` / `status`                                              |
+| `apps.<system>.*`           | `diff` / `adopt` / `apply` / `update` / `status`                                    |
 
 このリポジトリ自身の `apps` は接頭辞なし（`nix run .#diff`）。
 消費側のモジュールは既定で `nlp-diff` のように接頭辞を付ける。
@@ -331,3 +383,34 @@ $ nix fmt                          # nixfmt / shfmt / statix / deadnix / prettie
 pm 未検出で止まることまで見る。
 
 設計の詳細は [DESIGN.md](./DESIGN.md) を参照。
+
+### CI
+
+`.github/workflows/ci.yaml` は matrix を flake から組み立てる。
+`githubActions` output が唯一の出典で、workflow には check 名を書かない。
+
+```console
+$ nix eval --json .#githubActions.matrix.include | jq '.[0]'
+{
+  "attr": "checks.aarch64-linux.\"consumer\"",
+  "name": "consumer",
+  "os": [
+    "ubuntu-24.04-arm"
+  ],
+  "system": "aarch64-linux"
+}
+```
+
+- `nix-github-actions` の `mkGithubMatrix` が check 名と runner を pairing する
+- `attrPrefix = "checks"` なので `checks.<system>.<name>` をそのまま使う
+- 対象は `x86_64-linux` と `aarch64-linux`
+- `treefmt` も含め、matrix は check × system の組で埋まる（5 × 2 = 10）
+
+`attr` には `-` を含む名前が引用符つきで入る（`fake-path` → `"fake-path"`）。
+workflow では env 経由で渡して、shell の引用規則に依存させないようにしている。
+
+check を 1 つ足したときは matrix が自動で増える。workflow を編集しなくてよい。
+
+`.github/dependabot.yml` で nixpkgs は日次、GitHub Actions は週次で更新する。
+nixpkgs を上げた途端に全部赤にならないよう、依存ごとにグループを割って
+1 PR にまとめる。

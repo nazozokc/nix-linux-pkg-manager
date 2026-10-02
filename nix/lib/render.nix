@@ -72,9 +72,16 @@ let
     ];
 
   pmNames = lib.attrNames backends;
+
+  # pm に依らない共通値。宣言検査 (nix/lib/declared.nix) と同じ定義を
+  # 実行時にも渡さないと、adopt が「評価時に落ちる宣言」を生成してしまう
+  common = import ./names.nix;
+
   # 1 エントリ = 1 backend の代入ブロック。backend 間は空行で区切る
   registry = lib.concatStringsSep "\n" [
     "PM_ORDER=(${lib.concatMapStringsSep " " bashQuote pmNames})"
+    "PM_NAME_PATTERN=${bashQuote common.pattern}"
+    "PM_NAME_HINT=${bashQuote common.hint}"
     ""
     (lib.concatMapStringsSep "\n" renderBackend pmNames)
   ];
