@@ -1,7 +1,7 @@
 # nix/home-manager-module.nix
 # 消費側の home-manager 設定に import する。
 #
-#   imports = [ inputs.nix-linux-pkg-manager.flakeModules.home-manager ];
+#   imports = [ inputs.linux-pkgmanager.nix.flakeModules.home-manager ];
 #   programs.nlp = {
 #     enable = true;
 #     declared.pacman = ./packages/pacman.nix;

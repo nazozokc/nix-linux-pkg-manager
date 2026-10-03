@@ -1,4 +1,4 @@
-# nix-linux-pkg-manager 設計
+# linux-pkgmanager.nix 設計
 
 nix で Linux のパッケージマネージャー (pacman / apt / dnf / zypper / yum) を
 宣言的に管理する。パッケージ自体は各 pm が持つものを使い、Nix は宣言と実行だけを担う。

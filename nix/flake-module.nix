@@ -1,7 +1,7 @@
 # nix/flake-module.nix
 # 消費側の flake に import する flake-parts モジュール。
 #
-#   imports = [ inputs.nix-linux-pkg-manager.flakeModules.default ];
+#   imports = [ inputs.linux-pkgmanager.nix.flakeModules.default ];
 #   nlp.declared.pacman = [ "man-db" "bash-completion" ];
 #   nlp.declared.apt = ./packages/apt.nix;      # ファイルでも書ける
 #

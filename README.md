@@ -1,4 +1,4 @@
-# nix-linux-pkg-manager
+# linux-pkgmanager.nix
 
 Nix を宣言の入口として、**ネイティブの**パッケージマネージャー経由で
 Linux パッケージを導入する。パッケージ自体を Nix store には置かない。
@@ -180,8 +180,8 @@ pm ごとに 1 ファイルなので、対象をまたぐ宣言は素直に書�
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-parts.url = "github:hercules-ci/flake-parts";
 
-    nix-linux-pkg-manager = {
-      url = "github:nazozokc/nix-linux-pkg-manager";
+    linux-pkgmanager.nix = {
+      url = "github:nazozokc/linux-pkgmanager.nix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
@@ -189,7 +189,7 @@ pm ごとに 1 ファイルなので、対象をまたぐ宣言は素直に書�
   outputs =
     inputs@{ flake-parts, ... }:
     flake-parts.lib.mkFlake { inherit inputs; } {
-      imports = [ inputs.nix-linux-pkg-manager.flakeModules.default ];
+      imports = [ inputs.linux-pkgmanager.nix.flakeModules.default ];
 
       systems = [
         "x86_64-linux"
@@ -253,7 +253,7 @@ home-manager には `flakeModules.home-manager` を置く。出るのは
 
 ```nix
 {
-  imports = [ inputs.nix-linux-pkg-manager.flakeModules.home-manager ];
+  imports = [ inputs.linux-pkgmanager.nix.flakeModules.home-manager ];
 
   programs.nlp = {
     enable = true;
@@ -283,11 +283,11 @@ activation に挟むと、非対話の `switch` や CI で必ず詰まる。
 
 ```nix
 outputs =
-  { nixpkgs, nix-linux-pkg-manager, ... }:
+  { nixpkgs, linux-pkgmanager.nix, ... }:
   let
     systems = [ "x86_64-linux" ];
     each = system:
-      nix-linux-pkg-manager.lib.mkApps {
+      linux-pkgmanager.nix.lib.mkApps {
         pkgs = nixpkgs.legacyPackages.${system};
         declared.pacman = [
           "man-db"

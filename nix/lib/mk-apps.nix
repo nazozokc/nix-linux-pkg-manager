@@ -4,9 +4,9 @@
 # mkNlp は実行体だけを返す。消費側が diff / apply / update / status を
 # 自分の flake の apps として出すには、ラッパーまでこちらで組む。
 #
-#   outputs = { nixpkgs, nix-linux-pkg-manager, ... }:
+#   outputs = { nixpkgs, linux-pkgmanager.nix, ... }:
 #     let
-#       built = nix-linux-pkg-manager.lib.mkApps {
+#       built = linux-pkgmanager.nix.lib.mkApps {
 #         pkgs = nixpkgs.legacyPackages.x86_64-linux;
 #         declared.pacman = [ "man-db" "bash-completion" ];
 #       };

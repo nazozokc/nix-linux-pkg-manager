@@ -1,5 +1,5 @@
 {
-  description = "nix で Linux のパッケージマネージャー (pacman / apt / dnf / zypper / yum) を宣言的に管理する";
+  description = "nix で Linux のパッケージマネージャー (pacman / apt / dnf / zypper / yum) を宣言的に管理する。flake 名は linux-pkgmanager.nix";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";

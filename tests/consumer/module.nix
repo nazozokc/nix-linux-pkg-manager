@@ -1,7 +1,7 @@
 # tests/consumer/module.nix
 # 消費側の最小構成。flake-parts の imports にそのまま渡せる形にしてある。
 #
-#   imports = [ inputs.nix-linux-pkg-manager.flakeModules.default ];  # ← nlpModule
+#   imports = [ inputs.linux-pkgmanager.nix.flakeModules.default ];  # ← nlpModule
 #
 # checks.consumer (nix/flake-parts/checks.nix) はこのモジュールを
 # 入力を移した消費側 flake として評価し、公開 API の形と宣言の
